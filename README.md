@@ -2,9 +2,11 @@
 
 An event driven HTTP/1.1 static file server written from scratch in C for Linux, using non blocking sockets, edge triggered `epoll`, one event loop per worker thread, and zero copy `sendfile`.
 
-On a 2 vCPU cloud VM it serves about **139,000 requests per second** for a small page, with the load generator competing for the same two CPUs, and throughput scales **1.87x** going from one worker to two.
+I wanted to see how far one small C program could get on plain Linux primitives, with no framework in between. It's a static file server I can reason about end to end, from the socket all the way to the bytes on the wire.
 
-## Features
+On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small page, with the load generator competing for the same two CPUs, and throughput scales 1.87x going from one worker to two.
+
+## What's in it
 
 * HTTP/1.1 persistent connections (keep alive) and request pipelining
 * `GET` and `HEAD`, directory `index.html`, MIME types, `Date` header
@@ -52,7 +54,7 @@ Every worker thread owns its listening socket, its epoll instance and its connec
 
 **Why a strict parser?** Bare `CR` or `LF`, duplicate `Host` or conflicting `Content-Length` headers are rejected, because request smuggling attacks rely on two parsers disagreeing about where a request ends. A static file server does not need request bodies, so `Transfer-Encoding` is refused outright.
 
-## Build and run
+## Build and run it
 
 Requires Linux, a C11 compiler and `make`.
 
@@ -88,14 +90,14 @@ Results on a 2 vCPU Linux cloud VM (kernel 6.18), client and server on the same 
 
 Because the load generator shares the same two CPUs, these numbers understate what the server can do on dedicated hardware.
 
-## Limitations and next steps
+## What I'd do next
 
 * No TLS; in production it would sit behind a TLS terminating proxy
 * No range requests, compression or conditional `If-Modified-Since` responses yet
 * `accept4` failing with `EMFILE` is logged but not rate limited
 * A file cache of open descriptors would save an `openat2` and `fstat` per request
 
-## Layout
+## Where things live
 
 ```
 src/http.c      request parser and response helpers (pure, unit tested)
@@ -104,3 +106,7 @@ src/main.c      command line options
 tests/          unit tests (C) and end to end tests (Python)
 bench/          load generator and benchmark script
 ```
+
+---
+
+If something here is unclear, broken, or just wrong, feel free to open an issue. I'm always happy to chat about it.
