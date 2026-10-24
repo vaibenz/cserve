@@ -1,0 +1,13 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make all
+      - name: Unit and integration tests (ASan + UBSan)
+        run: make test
+      - name: Smoke benchmark
+        run: DUR=3 ./bench/run.sh
