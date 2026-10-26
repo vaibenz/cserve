@@ -84,6 +84,7 @@ typedef struct {
     conn *lru_head, *lru_tail;
     conn *head_first, *head_last; /* waiting for a request head, earliest deadline first */
     int nconns, max_conns;
+    int spare_fd;                 /* held in reserve for running out of descriptors */
     unsigned long long accepted, responses, head_timeouts, evicted, refused;
     pthread_t tid;
 } worker;
@@ -496,6 +497,19 @@ static void conn_handle(worker *w, conn *c) {
 static void accept_all(worker *w) {
     for (;;) {
         int fd = accept4(w->listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (fd < 0 && (errno == EMFILE || errno == ENFILE) && w->spare_fd >= 0) {
+            /* Out of descriptors. The listener is level triggered, so leaving the connection in
+             * the backlog would make epoll report it again at once, forever: a busy loop. Give
+             * back the spare descriptor, accept and close the connection, and take it again.
+             * (accept reports EMFILE before looking at the backlog, so it may be empty.) */
+            close(w->spare_fd);
+            fd = accept4(w->listen_fd, NULL, NULL, SOCK_CLOEXEC);
+            if (fd >= 0) close(fd);
+            w->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+            if (fd < 0) return; /* the backlog is empty */
+            w->refused++;
+            continue;
+        }
         if (fd < 0) {
             if (errno == EINTR || errno == ECONNABORTED) continue;
             if (errno != EAGAIN && errno != EWOULDBLOCK && !w->cfg->quiet) perror("accept4");
@@ -610,6 +624,7 @@ int server_run(const server_config *cfg) {
         w->id = i;
         w->cfg = cfg;
         w->max_conns = (cfg->max_conns + cfg->threads - 1) / cfg->threads;
+        w->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
         w->listen_fd = make_listener(cfg->port);
         w->epfd = epoll_create1(EPOLL_CLOEXEC);
         if (w->listen_fd < 0 || w->epfd < 0) {
@@ -637,6 +652,7 @@ int server_run(const server_config *cfg) {
         evicted += workers[i].evicted;
         refused += workers[i].refused;
         close(workers[i].listen_fd);
+        if (workers[i].spare_fd >= 0) close(workers[i].spare_fd);
         close(workers[i].epfd);
     }
     if (!cfg->quiet)

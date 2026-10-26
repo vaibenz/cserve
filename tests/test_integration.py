@@ -7,6 +7,7 @@ import email.utils
 import hashlib
 import http.client
 import os
+import resource
 import socket
 import ssl
 import subprocess
@@ -79,10 +80,11 @@ class RawConn:
         self.sock.close()
 
 
-def start_server(root, extra):
+def start_server(root, extra, max_fds=None):
     port = free_port()
+    limit = (lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (max_fds, max_fds))) if max_fds else None
     proc = subprocess.Popen([BINARY, "-p", str(port), "-r", root, "-t", "2", "-i", "2", "-q"] + extra,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=limit)
     for _ in range(100):
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.1).close()
@@ -544,6 +546,31 @@ class AttackTest(unittest.TestCase):
             self.served()
         time.sleep(2.5)
         self.assertTrue(self.served())
+
+    def test_out_of_descriptors_does_not_spin(self):
+        # With 64 descriptors and 100 clients the server runs out. The listener is level triggered,
+        # so a naive accept loop would be woken for the waiting connections forever, at 100% CPU.
+        port, proc = start_server(self.tmp.name + "/www", ["-t", "1"], max_fds=64)
+        self.addCleanup(stop_server, proc)
+
+        def cpu_ticks():
+            with open("/proc/%d/stat" % proc.pid) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            return int(fields[11]) + int(fields[12])
+
+        held = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(100)]
+        time.sleep(0.5)
+        before = cpu_ticks()
+        time.sleep(2.0)
+        used = (cpu_ticks() - before) / os.sysconf("SC_CLK_TCK") / 2.0
+        self.assertLess(used, 0.2, "server used %.0f%% CPU while out of descriptors" % (used * 100))
+        for s in held:
+            s.close()
+        time.sleep(0.5)
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(c.close)
+        c.request("GET", "/hello.txt")
+        self.assertEqual(c.getresponse().status, 200)  # and it recovers once they are released
 
     def test_slow_read_is_reaped(self):
         # The reverse attack: request a large file and take it a trickle at a time, 4 KB every 6 s
