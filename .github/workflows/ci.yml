@@ -5,9 +5,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev clang
       - name: Build
         run: make all
-      - name: Unit and integration tests (ASan + UBSan)
+      - name: Unit and integration tests (ASan + UBSan, plain and TLS)
         run: make test
+      - name: Fuzz the parser for 60 s
+        run: make fuzz FUZZ_TIME=60
       - name: Smoke benchmark
         run: DUR=3 ./bench/run.sh

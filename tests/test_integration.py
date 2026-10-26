@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -317,6 +318,132 @@ class ServerTest(unittest.TestCase):
         conn = self.raw()
         conn.send(get(self.port))
         conn.response()
+        self.assertTrue(conn.is_closed(wait=5.0))  # server runs with -i 2
+
+
+class TlsTest(unittest.TestCase):
+    """The same server over TLS, with a throwaway certificate made by the openssl tool."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        base = cls.tmp.name
+        root = os.path.join(base, "www")
+        os.makedirs(root)
+        with open(os.path.join(root, "hello.txt"), "w") as f:
+            f.write("hello world\n")
+        cls.big = os.urandom(8 * 1024 * 1024 + 12345)  # not a multiple of the 16 KB record size
+        with open(os.path.join(root, "big.bin"), "wb") as f:
+            f.write(cls.big)
+        cls.cert, cls.key = os.path.join(base, "cert.pem"), os.path.join(base, "key.pem")
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                        "-nodes", "-keyout", cls.key, "-out", cls.cert, "-days", "1", "-subj", "/CN=localhost",
+                        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"],
+                       check=True, capture_output=True)
+        cls.port, cls.proc = start_server(root, ["-c", cls.cert, "-k", cls.key])
+
+    @classmethod
+    def tearDownClass(cls):
+        stop_server(cls.proc)
+        cls.tmp.cleanup()
+
+    def context(self):
+        ctx = ssl.create_default_context(cafile=self.cert)
+        ctx.set_alpn_protocols(["http/1.1"])
+        return ctx
+
+    def https(self):
+        c = http.client.HTTPSConnection("localhost", self.port, timeout=5, context=self.context())
+        self.addCleanup(c.close)
+        return c
+
+    def tls_socket(self, ctx=None):
+        raw = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        s = (ctx or self.context()).wrap_socket(raw, server_hostname="localhost")
+        self.addCleanup(s.close)
+        return s
+
+    def test_handshake_verifies_and_negotiates(self):
+        s = self.tls_socket()
+        self.assertIn(s.version(), ("TLSv1.2", "TLSv1.3"))
+        self.assertEqual(s.selected_alpn_protocol(), "http/1.1")
+
+    def test_keep_alive_over_tls(self):
+        c = self.https()
+        for _ in range(100):
+            c.request("GET", "/hello.txt")
+            r = c.getresponse()
+            self.assertEqual((r.status, r.read()), (200, b"hello world\n"))
+
+    def test_pipelining_over_tls(self):
+        s = self.tls_socket()
+        s.sendall(get(self.port) * 3)
+        data = b""
+        while data.count(b"hello world\n") < 3:
+            chunk = s.recv(65536)
+            self.assertTrue(chunk, "closed early")
+            data += chunk
+        self.assertEqual(data.count(b"HTTP/1.1 200 OK"), 3)
+
+    def test_large_file_integrity_over_tls(self):
+        c = self.https()
+        c.request("GET", "/big.bin")
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        self.assertEqual(hashlib.sha256(r.read()).digest(), hashlib.sha256(self.big).digest())
+
+    def test_slow_reader_over_tls(self):
+        # Partial and would-block TLS writes must resume with exactly the bytes that were pending.
+        s = self.tls_socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        s.sendall(get(self.port, "/big.bin"))
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += s.recv(4096)
+        head, body = data.split(b"\r\n\r\n", 1)
+        while len(body) < 768 * 1024:
+            chunk = s.recv(4096)
+            self.assertTrue(chunk)
+            body += chunk
+        self.assertEqual(body, self.big[:len(body)])
+
+    def test_concurrent_tls_clients(self):
+        errors = []
+
+        def worker():
+            try:
+                c = http.client.HTTPSConnection("localhost", self.port, timeout=10, context=self.context())
+                for _ in range(10):
+                    c.request("GET", "/hello.txt")
+                    r = c.getresponse()
+                    if (r.status, r.read()) != (200, b"hello world\n"):
+                        errors.append("bad response")
+                c.close()
+            except Exception as e:  # noqa: BLE001
+                errors.append(repr(e))
+
+        threads = [threading.Thread(target=worker) for _ in range(32)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+
+    def test_plaintext_client_is_dropped(self):
+        conn = RawConn(self.port)
+        self.addCleanup(conn.close)
+        conn.send(get(self.port))
+        self.assertTrue(conn.is_closed(wait=3.0))
+
+    def test_client_that_only_speaks_h2_is_refused(self):
+        ctx = ssl.create_default_context(cafile=self.cert)
+        ctx.set_alpn_protocols(["h2"])
+        with self.assertRaises(ssl.SSLError):
+            self.tls_socket(ctx)
+
+    def test_stalled_handshake_is_reaped(self):
+        conn = RawConn(self.port)  # TCP connects, then never sends a ClientHello
+        self.addCleanup(conn.close)
         self.assertTrue(conn.is_closed(wait=5.0))  # server runs with -i 2
 
 

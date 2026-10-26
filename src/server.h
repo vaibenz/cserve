@@ -7,6 +7,8 @@ typedef struct {
     int threads;           /* number of worker event loops */
     int idle_timeout_sec;  /* close keep alive connections idle this long */
     int quiet;
+    const char *tls_cert;  /* PEM certificate chain; with tls_key, serve HTTPS */
+    const char *tls_key;
 } server_config;
 
 /* Runs until SIGINT or SIGTERM. Returns 0 on clean shutdown. */

@@ -10,9 +10,15 @@
  *
  * Nothing is shared between workers except read only configuration, so the
  * hot path takes no locks at all.
+ *
+ * With TLS, every connection carries an OpenSSL session. The state machine is
+ * the same; reads and writes go through tls_read and tls_write, which return
+ * TLS_WANT instead of blocking, and file bodies are encrypted in 16 KB chunks
+ * (one TLS record each) instead of going out through sendfile.
  */
 #include "server.h"
 #include "http.h"
+#include "tls.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -44,6 +50,7 @@
 #define WBUF_SIZE 1024
 #define MAX_EVENTS 256
 #define SENDFILE_CHUNK (1 << 20)
+#define TLS_CHUNK 16384 /* the largest TLS record */
 
 typedef struct conn {
     int fd;
@@ -54,8 +61,12 @@ typedef struct conn {
     int keep_alive;            /* keep the connection after the current response */
     int eof;                   /* peer has closed its write side */
     int64_t last_active;        /* ms, monotonic */
-    uint64_t acked;            /* bytes the client had acknowledged at the last idle check */
     struct conn *prev, *next;  /* LRU list, most recently active first */
+    uint64_t acked;            /* bytes the client had acknowledged at the last idle check */
+    SSL *ssl;                  /* NULL for plain HTTP */
+    int handshaked;
+    char *tbuf;                /* TLS only: file bytes read but not yet fully encrypted and sent */
+    size_t tlen, toff;
     char rbuf[RBUF_SIZE];
     char wbuf[WBUF_SIZE];
 } conn;
@@ -69,6 +80,7 @@ typedef struct {
 } worker;
 
 static volatile sig_atomic_t g_running = 1;
+static SSL_CTX *g_tls;
 static int g_root_fd = -1;
 static char g_root_real[PATH_MAX];
 static size_t g_root_len;
@@ -105,10 +117,13 @@ static void conn_touch(worker *w, conn *c) {
 
 static void conn_close(worker *w, conn *c) {
     lru_unlink(w, c);
+    if (c->ssl) tls_close(c->ssl);
+    free(c->tbuf);
     if (c->file_fd >= 0) close(c->file_fd);
     close(c->fd); /* also removes it from the epoll set */
     free(c);
 }
+
 
 /*
  * A connection in the middle of a large response can go a long time without an
@@ -259,9 +274,11 @@ static void build_response(conn *c, const http_request *req) {
 /* Reads until EAGAIN, EOF, or the buffer is full. Returns -1 on error. */
 static int conn_read(conn *c) {
     while (c->rlen < RBUF_SIZE) {
-        ssize_t n = read(c->fd, c->rbuf + c->rlen, RBUF_SIZE - c->rlen);
+        ssize_t n = c->ssl ? tls_read(c->ssl, c->rbuf + c->rlen, RBUF_SIZE - c->rlen)
+                           : read(c->fd, c->rbuf + c->rlen, RBUF_SIZE - c->rlen);
         if (n > 0) { c->rlen += (size_t)n; continue; }
         if (n == 0) { c->eof = 1; return 0; }
+        if (c->ssl) return n == TLS_WANT ? 0 : -1;
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
         return -1;
@@ -269,16 +286,52 @@ static int conn_read(conn *c) {
     return 0;
 }
 
+/* One send of buffered bytes: >0 sent, TLS_WANT if the socket would block, -1 on error. */
+static ssize_t conn_send(conn *c, const char *p, size_t n, int more) {
+    if (c->ssl) return tls_write(c->ssl, p, n);
+    for (;;) {
+        /* MSG_MORE lets the kernel coalesce the head with the first file bytes. */
+        ssize_t r = send(c->fd, p, n, MSG_NOSIGNAL | (more ? MSG_MORE : 0));
+        if (r >= 0) return r;
+        if (errno == EINTR) continue;
+        return errno == EAGAIN || errno == EWOULDBLOCK ? TLS_WANT : -1;
+    }
+}
+
+/* TLS file bodies: read a record's worth of the file, encrypt and send it, repeat.
+ * Returns 1 when the whole body is sent, 0 if the socket would block, -1 on error. */
+static int flush_file_tls(conn *c) {
+    while (c->toff < c->tlen || c->file_off < c->file_end) {
+        if (c->toff == c->tlen) {
+            if (!c->tbuf && !(c->tbuf = malloc(TLS_CHUNK))) return -1;
+            size_t want = (size_t)(c->file_end - c->file_off);
+            if (want > TLS_CHUNK) want = TLS_CHUNK;
+            ssize_t r = pread(c->file_fd, c->tbuf, want, c->file_off);
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) return -1; /* error, or the file shrank underneath us */
+            c->tlen = (size_t)r;
+            c->toff = 0;
+            c->file_off += r;
+        }
+        /* A partial or would-block write must be retried with the same bytes: they stay in tbuf. */
+        ssize_t n = tls_write(c->ssl, c->tbuf + c->toff, c->tlen - c->toff);
+        if (n > 0) { c->toff += (size_t)n; continue; }
+        return n == TLS_WANT ? 0 : -1;
+    }
+    c->tlen = c->toff = 0;
+    return 1;
+}
+
 /* Returns 1 when the response is fully sent, 0 if the socket would block, -1 on error. */
 static int conn_flush(conn *c) {
     while (c->woff < c->wlen) {
-        /* MSG_MORE lets the kernel coalesce the head with the first file bytes. */
-        int flags = MSG_NOSIGNAL | (c->file_fd >= 0 ? MSG_MORE : 0);
-        ssize_t n = send(c->fd, c->wbuf + c->woff, c->wlen - c->woff, flags);
+        ssize_t n = conn_send(c, c->wbuf + c->woff, c->wlen - c->woff, c->file_fd >= 0);
         if (n > 0) { c->woff += (size_t)n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
-        return -1;
+        return n == TLS_WANT ? 0 : -1;
+    }
+    if (c->ssl && c->file_fd >= 0) {
+        int r = flush_file_tls(c);
+        if (r <= 0) return r;
     }
     while (c->file_fd >= 0 && c->file_off < c->file_end) {
         size_t chunk = (size_t)(c->file_end - c->file_off);
@@ -312,6 +365,12 @@ static int parse_status(parse_result pr) {
  */
 static void conn_handle(worker *w, conn *c) {
     conn_touch(w, c);
+    if (c->ssl && !c->handshaked) {
+        int r = tls_handshake(c->ssl);
+        if (r == TLS_WANT) return; /* idle reaping also covers clients that stall mid handshake */
+        if (r < 0) { conn_close(w, c); return; }
+        c->handshaked = 1; /* carry on: the first request may already be waiting */
+    }
     for (;;) {
         if (c->wlen > 0 || c->file_fd >= 0) {
             int r = conn_flush(c);
@@ -351,6 +410,7 @@ static void accept_all(worker *w) {
         if (!c) { close(fd); continue; }
         c->fd = fd;
         c->file_fd = -1;
+        if (g_tls && !(c->ssl = tls_session(g_tls, fd))) { close(fd); free(c); continue; }
         /* Register for both directions once. With EPOLLET we are only told
          * about transitions, so there is no busy wakeup for a writable socket. */
         struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.ptr = c};
@@ -401,6 +461,7 @@ int server_run(const server_config *cfg) {
     g_root_len = strlen(g_root_real);
     g_root_fd = open(g_root_real, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (g_root_fd < 0) { perror(cfg->root); return 1; }
+    if (cfg->tls_cert && !(g_tls = tls_context(cfg->tls_cert, cfg->tls_key))) return 1;
 
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
@@ -426,8 +487,8 @@ int server_run(const server_config *cfg) {
         epoll_ctl(w->epfd, EPOLL_CTL_ADD, w->listen_fd, &ev);
     }
     if (!cfg->quiet)
-        printf("cserve listening on :%d with %d worker%s, serving %s\n", cfg->port, cfg->threads,
-               cfg->threads == 1 ? "" : "s", g_root_real);
+        printf("cserve listening on :%d%s with %d worker%s, serving %s\n", cfg->port, g_tls ? " (TLS)" : "",
+               cfg->threads, cfg->threads == 1 ? "" : "s", g_root_real);
     fflush(stdout);
 
     for (int i = 0; i < cfg->threads; i++)
@@ -444,5 +505,6 @@ int server_run(const server_config *cfg) {
     if (!cfg->quiet) printf("\ncserve stopped: %llu connections, %llu responses\n", accepted, responses);
     free(workers);
     close(g_root_fd);
+    if (g_tls) tls_free_context(g_tls);
     return 0;
 }

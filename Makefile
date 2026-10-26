@@ -2,19 +2,20 @@ CC      ?= cc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wpedantic -Wshadow -pthread
 SAN     := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
-SRC     := src/main.c src/server.c src/http.c
-HDR     := src/http.h src/server.h
+SRC     := src/main.c src/server.c src/http.c src/tls.c
+HDR     := src/http.h src/server.h src/tls.h
+LIBS    := -lssl -lcrypto
 
 .PHONY: all test unit integration bench fuzz clean
 
 all: cserve bench/bench
 
 cserve: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) -o $@ $(SRC)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LIBS)
 
 # Same server built with AddressSanitizer and UndefinedBehaviorSanitizer for tests.
 cserve-asan: $(SRC) $(HDR)
-	$(CC) $(CFLAGS) $(SAN) -o $@ $(SRC)
+	$(CC) $(CFLAGS) $(SAN) -o $@ $(SRC) $(LIBS)
 
 bench/bench: bench/bench.c
 	$(CC) $(CFLAGS) -o $@ $<
