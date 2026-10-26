@@ -1,0 +1,5 @@
+GET /f HTTP/1.1
+Host: x
+Range: bytes=0-99
+If-None-Match: "abc"
+

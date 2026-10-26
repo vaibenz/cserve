@@ -1,0 +1,6 @@
+GET /a%20b/../c HTTP/1.1
+Host: x
+Content-Length: 0
+Connection: close, keep-alive
+
+GET / HTTP/1.1

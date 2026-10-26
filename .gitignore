@@ -4,3 +4,8 @@ bench/bench
 tests/test_http
 *.o
 __pycache__/
+fuzz/work/
+fuzz/fuzz_http
+crash-*
+leak-*
+timeout-*
