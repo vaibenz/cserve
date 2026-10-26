@@ -18,9 +18,10 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
-#include <netinet/tcp.h>
+#include <linux/tcp.h> /* the kernel tcp_info, which has tcpi_bytes_acked */
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,7 +53,8 @@ typedef struct conn {
     size_t wlen, woff;         /* response head (or small error body) in wbuf */
     int keep_alive;            /* keep the connection after the current response */
     int eof;                   /* peer has closed its write side */
-    time_t last_active;
+    int64_t last_active;        /* ms, monotonic */
+    uint64_t acked;            /* bytes the client had acknowledged at the last idle check */
     struct conn *prev, *next;  /* LRU list, most recently active first */
     char rbuf[RBUF_SIZE];
     char wbuf[WBUF_SIZE];
@@ -73,10 +75,11 @@ static size_t g_root_len;
 
 static void on_signal(int sig) { (void)sig; g_running = 0; }
 
-static time_t now_sec(void) {
+/* Milliseconds: whole seconds would let a connection touched at x.999 expire at x+1.001. */
+static int64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec;
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 /* ---------- connection LRU ---------- */
@@ -96,7 +99,7 @@ static void lru_push_front(worker *w, conn *c) {
 }
 
 static void conn_touch(worker *w, conn *c) {
-    c->last_active = now_sec();
+    c->last_active = now_ms();
     if (w->lru_head != c) { lru_unlink(w, c); lru_push_front(w, c); }
 }
 
@@ -107,11 +110,39 @@ static void conn_close(worker *w, conn *c) {
     free(c);
 }
 
+/*
+ * A connection in the middle of a large response can go a long time without an
+ * event: the kernel send buffer autotunes to megabytes, and EPOLLOUT only fires
+ * again once a good part of it has drained. The same is true after the last
+ * write, when the server has nothing left to send but the kernel still holds
+ * megabytes of the response. For a slow client that is still reading, neither
+ * is idle. So an expired connection is judged by progress instead: if the
+ * client has acknowledged more bytes since the last check, it is taking data
+ * and the connection stays. A client that stops reading acknowledges nothing
+ * and is reaped as before.
+ *
+ * The acknowledged byte count is used rather than the size of the send queue
+ * because the queue is a sawtooth: the check runs one timeout after the last
+ * refill, so it tends to sample the same point of the tooth and see the same
+ * size even while the client reads steadily.
+ */
+static int made_progress(conn *c) {
+    struct tcp_info ti;
+    socklen_t len = sizeof ti;
+    if (getsockopt(c->fd, IPPROTO_TCP, TCP_INFO, &ti, &len) < 0) return 0;
+    int progressed = ti.tcpi_bytes_acked != c->acked;
+    c->acked = ti.tcpi_bytes_acked;
+    return progressed;
+}
+
 /* Idle connections sit at the tail, so this is O(number expired). */
 static void sweep_idle(worker *w) {
-    time_t now = now_sec();
-    while (w->lru_tail && now - w->lru_tail->last_active >= w->cfg->idle_timeout_sec)
-        conn_close(w, w->lru_tail);
+    int64_t now = now_ms();
+    while (w->lru_tail && now - w->lru_tail->last_active >= (int64_t)w->cfg->idle_timeout_sec * 1000) {
+        conn *c = w->lru_tail;
+        if (made_progress(c)) conn_touch(w, c); /* a slow reader, not an idle one */
+        else conn_close(w, c);
+    }
 }
 
 /* ---------- safe file opening ---------- */
@@ -325,7 +356,7 @@ static void accept_all(worker *w) {
         struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.ptr = c};
         if (epoll_ctl(w->epfd, EPOLL_CTL_ADD, fd, &ev) < 0) { close(fd); free(c); continue; }
         lru_push_front(w, c);
-        c->last_active = now_sec();
+        c->last_active = now_ms();
         w->accepted++;
     }
 }

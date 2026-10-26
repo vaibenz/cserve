@@ -65,6 +65,28 @@ class RawConn:
         self.sock.close()
 
 
+def start_server(root, extra):
+    port = free_port()
+    proc = subprocess.Popen([BINARY, "-p", str(port), "-r", root, "-t", "2", "-i", "2", "-q"] + extra,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    for _ in range(100):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.1).close()
+            return port, proc
+        except OSError:
+            time.sleep(0.05)
+    raise RuntimeError("server did not start")
+
+
+def stop_server(proc):
+    proc.terminate()
+    _, err = proc.communicate(timeout=10)
+    # Any AddressSanitizer or UBSan report lands on stderr.
+    if b"ERROR: AddressSanitizer" in err or b"runtime error" in err:
+        raise AssertionError("sanitizer report:\n" + err.decode(errors="replace"))
+    assert proc.returncode == 0, err.decode(errors="replace")
+
+
 def get(port, path="/hello.txt"):
     return f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
 
@@ -91,28 +113,17 @@ class ServerTest(unittest.TestCase):
             f.write("TOP SECRET")
         os.symlink(os.path.join(base, "secret.txt"), os.path.join(root, "escape.txt"))
 
-        cls.port = free_port()
-        cls.proc = subprocess.Popen(
-            [BINARY, "-p", str(cls.port), "-r", root, "-t", "2", "-i", "2", "-q"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", cls.port), timeout=0.1).close()
-                break
-            except OSError:
-                time.sleep(0.05)
-        else:
-            raise RuntimeError("server did not start")
+        cls.root = root
+        cls.port, cls.proc = start_server(root, cls.extra_args())
+
+    @classmethod
+    def extra_args(cls):
+        return []
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc.terminate()
-        _, err = cls.proc.communicate(timeout=10)
+        stop_server(cls.proc)
         cls.tmp.cleanup()
-        # Any AddressSanitizer or UBSan report lands on stderr.
-        if b"ERROR: AddressSanitizer" in err or b"runtime error" in err:
-            raise AssertionError("sanitizer report:\n" + err.decode(errors="replace"))
-        assert cls.proc.returncode == 0, err.decode(errors="replace")
 
     def client(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
@@ -263,6 +274,44 @@ class ServerTest(unittest.TestCase):
         for t in threads:
             t.join()
         self.assertEqual(errors, [])
+
+    def test_slow_but_steady_reader_is_not_reaped(self):
+        # Regression test, on its own server with a 1 s idle timeout. A client that downloads 8 MB at
+        # about 800 KB/s goes longer than 1 s without the server seeing an event: the kernel send buffer
+        # autotunes to about 4 MB and EPOLLOUT only fires again after a large part of it has drained.
+        # It used to be closed as idle, about 4 MB in, every time. Now bytes acknowledged keep it alive.
+        port, proc = start_server(self.root, ["-t", "1", "-i", "1"])
+        self.addCleanup(stop_server, proc)
+        conn = RawConn(port)
+        self.addCleanup(conn.close)
+        conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+        conn.send(get(port, "/big.bin"))
+        data = b""
+        while b"\r\n\r\n" not in data:
+            data += conn.sock.recv(16384)
+        body = data.split(b"\r\n\r\n", 1)[1]
+        while len(body) < len(self.big):
+            chunk = conn.sock.recv(16384)
+            self.assertTrue(chunk, "closed as idle after %d of %d bytes" % (len(body), len(self.big)))
+            body += chunk
+            time.sleep(0.02)
+        self.assertEqual(hashlib.sha256(body).digest(), hashlib.sha256(self.big).digest())
+
+    def test_stalled_reader_is_still_reaped(self):
+        # The other side of the same rule: a client that stops reading mid download acknowledges
+        # nothing, so it is closed once the idle timeout passes.
+        conn = self.raw()
+        conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+        conn.send(get(self.port, "/big.bin"))
+        conn.sock.recv(16384)
+        time.sleep(7.0)  # server runs with -i 2: closed by the second check with nothing acknowledged
+        # The server has closed its socket, so anything we send now is answered with a reset.
+        conn.sock.settimeout(5.0)
+        with self.assertRaises((ConnectionResetError, BrokenPipeError)):
+            for _ in range(50):
+                conn.sock.send(get(self.port))
+                conn.sock.recv(16384)
+                time.sleep(0.1)
 
     def test_idle_connection_is_reaped(self):
         conn = self.raw()
