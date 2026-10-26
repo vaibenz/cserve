@@ -79,6 +79,22 @@ int http_path_is_safe(const char *path) {
     return 1;
 }
 
+/*
+ * Copies a header value. A value that does not fit is dropped, and so is a
+ * header that appears twice: two Range headers make the request ambiguous, so
+ * neither is used. `seen` remembers which of these headers have appeared.
+ */
+static void copy_value(char *dst, size_t dstsz, const char *v, size_t n, unsigned *seen, unsigned bit) {
+    if (*seen & bit) {
+        dst[0] = '\0';
+        return;
+    }
+    *seen |= bit;
+    if (n == 0 || n >= dstsz || memchr(v, '\0', n)) return;
+    memcpy(dst, v, n);
+    dst[n] = '\0';
+}
+
 parse_result http_parse_request(const char *buf, size_t len, http_request *req) {
     const char *end = find_head_end(buf, len);
     if (!end) return len >= MAX_HEADERS_SIZE ? PARSE_TOO_LARGE : PARSE_INCOMPLETE;
@@ -129,6 +145,7 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req) 
 
     /* Header fields */
     int saw_host = 0, saw_close = 0, saw_keep_alive = 0;
+    unsigned seen = 0;
     req->content_length = -1;
     const char *p = line_end + 2;
     while (p < limit) {
@@ -155,6 +172,14 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req) 
             }
             if (req->content_length >= 0 && req->content_length != cl) return PARSE_ERROR;
             req->content_length = cl;
+        } else if (ieq(p, name_len, "Range")) {
+            copy_value(req->range, sizeof req->range, v, v_len, &seen, 1);
+        } else if (ieq(p, name_len, "If-None-Match")) {
+            copy_value(req->if_none_match, sizeof req->if_none_match, v, v_len, &seen, 2);
+        } else if (ieq(p, name_len, "If-Modified-Since")) {
+            copy_value(req->if_modified_since, sizeof req->if_modified_since, v, v_len, &seen, 4);
+        } else if (ieq(p, name_len, "If-Range")) {
+            copy_value(req->if_range, sizeof req->if_range, v, v_len, &seen, 8);
         } else if (ieq(p, name_len, "Transfer-Encoding")) {
             return PARSE_ERROR; /* request bodies are not supported by a static server */
         } else if (ieq(p, name_len, "Connection")) {
@@ -180,6 +205,126 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req) 
     return PARSE_OK;
 }
 
+/* Parses a decimal of at most 18 digits (no overflow). Returns digits read, or 0. */
+static int parse_digits(const char **p, long long *out) {
+    long long v = 0;
+    int n = 0;
+    while (**p >= '0' && **p <= '9') {
+        if (++n > 18) return 0;
+        v = v * 10 + (**p - '0');
+        (*p)++;
+    }
+    *out = v;
+    return n;
+}
+
+int http_parse_range(const char *v, long long size, long long *first, long long *last) {
+    if (strncmp(v, "bytes=", 6) != 0) return 0; /* other units are ignored, as RFC 9110 allows */
+    const char *p = v + 6;
+    while (is_ows(*p)) p++;
+    long long a = -1, b = -1;
+    if (*p == '-') { /* suffix: the last b bytes */
+        p++;
+        if (!parse_digits(&p, &b)) return 0;
+    } else {
+        if (!parse_digits(&p, &a) || *p++ != '-') return 0;
+        if (*p >= '0' && *p <= '9' && !parse_digits(&p, &b)) return 0;
+        if (b >= 0 && b < a) return 0; /* "bytes=5-3" is invalid, so the header is ignored */
+    }
+    while (is_ows(*p)) p++;
+    if (*p != '\0') return 0; /* a second range ("0-1,5-6") or trailing junk: send the whole file */
+
+    if (a < 0) { /* suffix range */
+        if (b == 0 || size == 0) return -1;
+        *first = b >= size ? 0 : size - b;
+        *last = size - 1;
+        return 1;
+    }
+    if (a >= size) return -1;
+    *first = a;
+    *last = b < 0 || b >= size ? size - 1 : b;
+    return 1;
+}
+
+int http_format_etag(char *out, size_t outsz, unsigned long long ino, long long size, long long mtime_sec,
+                     long mtime_nsec) {
+    int n = snprintf(out, outsz, "\"%llx-%llx-%llx%08lx\"", ino, (unsigned long long)size,
+                     (unsigned long long)mtime_sec, (unsigned long)mtime_nsec);
+    return n < 0 || (size_t)n >= outsz ? -1 : n;
+}
+
+static const char *const g_days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+static const char *const g_months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+int http_format_date(char *out, size_t outsz, long long t) {
+    time_t tt = (time_t)t;
+    struct tm tm;
+    if (!gmtime_r(&tt, &tm)) return -1;
+    int n = snprintf(out, outsz, "%s, %02d %s %04d %02d:%02d:%02d GMT", g_days[tm.tm_wday], tm.tm_mday,
+                     g_months[tm.tm_mon], tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return n < 0 || (size_t)n >= outsz ? -1 : n;
+}
+
+/* Days from 1970-01-01 to y-m-d in the proleptic Gregorian calendar (Howard Hinnant's algorithm). */
+static long long days_from_civil(long long y, int m, int d) {
+    y -= m <= 2;
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    long long yoe = y - era * 400;
+    long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+long long http_parse_date(const char *v) {
+    /* Exactly "Www, DD Mmm YYYY HH:MM:SS GMT": 29 characters. Obsolete formats are not accepted;
+     * an unparseable If-Modified-Since is simply ignored, which is always safe. */
+    if (strlen(v) != 29 || v[3] != ',' || v[4] != ' ' || v[7] != ' ' || v[11] != ' ' || v[16] != ' ' ||
+        v[19] != ':' || v[22] != ':' || v[25] != ' ' || memcmp(v + 26, "GMT", 3) != 0)
+        return -1;
+    int wday = -1, mon = -1;
+    for (int i = 0; i < 7; i++)
+        if (memcmp(v, g_days[i], 3) == 0) wday = i;
+    for (int i = 0; i < 12; i++)
+        if (memcmp(v + 8, g_months[i], 3) == 0) mon = i + 1;
+    if (wday < 0 || mon < 0) return -1;
+    const int at[] = {5, 12, 17, 20, 23}, len[] = {2, 4, 2, 2, 2};
+    int f[5];
+    for (int k = 0; k < 5; k++) {
+        f[k] = 0;
+        for (int i = 0; i < len[k]; i++) {
+            char c = v[at[k] + i];
+            if (c < '0' || c > '9') return -1;
+            f[k] = f[k] * 10 + (c - '0');
+        }
+    }
+    int day = f[0], year = f[1], hh = f[2], mm = f[3], ss = f[4];
+    static const int mdays[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (day < 1 || day > mdays[mon - 1] || hh > 23 || mm > 59 || ss > 60) return -1;
+    int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    if (mon == 2 && day == 29 && !leap) return -1;
+    long long days = days_from_civil(year, mon, day);
+    if (((days % 7 + 11) % 7) != wday) return -1; /* 1970-01-01 was a Thursday */
+    return days * 86400 + hh * 3600 + mm * 60 + (ss > 59 ? 59 : ss);
+}
+
+int http_etag_matches(const char *list, const char *etag) {
+    const char *e = etag[0] == 'W' && etag[1] == '/' ? etag + 2 : etag; /* weak comparison */
+    size_t elen = strlen(e);
+    const char *p = list;
+    for (;;) {
+        while (is_ows(*p) || *p == ',') p++;
+        if (*p == '\0') return 0;
+        if (*p == '*') return 1;
+        if (p[0] == 'W' && p[1] == '/') p += 2;
+        if (*p != '"') return 0; /* malformed list: no match, so the full response is sent */
+        const char *q = strchr(p + 1, '"');
+        if (!q) return 0;
+        if ((size_t)(q + 1 - p) == elen && memcmp(p, e, elen) == 0) return 1;
+        p = q + 1;
+    }
+}
+
 const char *http_mime_type(const char *path) {
     const char *slash = strrchr(path, '/');
     const char *dot = strrchr(slash ? slash : path, '.');
@@ -202,11 +347,14 @@ const char *http_mime_type(const char *path) {
 const char *http_status_text(int status) {
     switch (status) {
     case 200: return "OK";
+    case 206: return "Partial Content";
+    case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 414: return "URI Too Long";
+    case 416: return "Range Not Satisfiable";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 505: return "HTTP Version Not Supported";
@@ -216,20 +364,19 @@ const char *http_status_text(int status) {
 
 int http_format_head(char *out, size_t outsz, int status, const char *content_type,
                      long long content_length, int keep_alive, const char *extra_headers) {
-    char date[64];
-    time_t now = time(NULL);
-    struct tm tm;
-    gmtime_r(&now, &tm);
-    strftime(date, sizeof date, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+    char date[64], length[48] = "";
+    if (http_format_date(date, sizeof date, (long long)time(NULL)) < 0) date[0] = '\0';
+    if (content_length >= 0) snprintf(length, sizeof length, "Content-Length: %lld\r\n", content_length);
     int n = snprintf(out, outsz,
                      "HTTP/1.1 %d %s\r\n"
                      "Server: cserve\r\n"
                      "Date: %s\r\n"
-                     "Content-Type: %s\r\n"
-                     "Content-Length: %lld\r\n"
+                     "%s%s%s"
+                     "%s"
                      "Connection: %s\r\n"
                      "%s\r\n",
-                     status, http_status_text(status), date, content_type, content_length,
+                     status, http_status_text(status), date, content_type ? "Content-Type: " : "",
+                     content_type ? content_type : "", content_type ? "\r\n" : "", length,
                      keep_alive ? "keep-alive" : "close", extra_headers ? extra_headers : "");
     return (n < 0 || (size_t)n >= outsz) ? -1 : n;
 }

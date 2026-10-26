@@ -254,18 +254,73 @@ static void build_response(conn *c, const http_request *req) {
     if (!S_ISREG(st.st_mode)) { close(fd); build_error(c, 404, req->keep_alive, head, NULL); return; }
 
     const char *type = http_mime_type(is_index ? "index.html" : req->path);
-    int n = http_format_head(c->wbuf, sizeof c->wbuf, 200, type, (long long)st.st_size,
-                             req->keep_alive, NULL);
+
+    /* Validators, sent with every file response. */
+    char etag[96], lastmod[48], extra[384];
+    if (http_format_etag(etag, sizeof etag, (unsigned long long)st.st_ino, (long long)st.st_size,
+                         (long long)st.st_mtim.tv_sec, st.st_mtim.tv_nsec) < 0 ||
+        http_format_date(lastmod, sizeof lastmod, (long long)st.st_mtim.tv_sec) < 0) {
+        close(fd);
+        build_error(c, 500, 0, head, NULL);
+        return;
+    }
+
+    /* Conditional GET (RFC 9110 section 13): If-None-Match wins over If-Modified-Since. */
+    int not_modified = 0;
+    if (req->if_none_match[0]) {
+        not_modified = http_etag_matches(req->if_none_match, etag);
+    } else if (req->if_modified_since[0]) {
+        long long since = http_parse_date(req->if_modified_since);
+        not_modified = since >= 0 && (long long)st.st_mtim.tv_sec <= since;
+    }
+    if (not_modified) {
+        close(fd);
+        snprintf(extra, sizeof extra, "ETag: %s\r\nLast-Modified: %s\r\n", etag, lastmod);
+        int n = http_format_head(c->wbuf, sizeof c->wbuf, 304, NULL, -1, req->keep_alive, extra);
+        if (n < 0) { build_error(c, 500, 0, head, NULL); return; }
+        c->wlen = (size_t)n;
+        c->woff = 0;
+        c->keep_alive = req->keep_alive;
+        return;
+    }
+
+    /* Range (RFC 9110 section 14), one range per request. If-Range makes it conditional on the
+     * client still holding this exact version: a strong ETag match, or the exact Last-Modified. */
+    int status = 200;
+    long long first = 0, last = (long long)st.st_size - 1;
+    if (req->range[0]) {
+        int use = 1;
+        if (req->if_range[0])
+            use = req->if_range[0] == '"' ? strcmp(req->if_range, etag) == 0 : strcmp(req->if_range, lastmod) == 0;
+        int r = use ? http_parse_range(req->range, (long long)st.st_size, &first, &last) : 0;
+        if (r < 0) {
+            close(fd);
+            char cr[64];
+            snprintf(cr, sizeof cr, "Content-Range: bytes */%lld\r\n", (long long)st.st_size);
+            build_error(c, 416, req->keep_alive, head, cr);
+            return;
+        }
+        if (r > 0) status = 206;
+        else { first = 0; last = (long long)st.st_size - 1; } /* ignored: the whole file */
+    }
+
+    int e = snprintf(extra, sizeof extra, "Accept-Ranges: bytes\r\nETag: %s\r\nLast-Modified: %s\r\n", etag,
+                     lastmod);
+    if (status == 206)
+        snprintf(extra + e, sizeof extra - (size_t)e, "Content-Range: bytes %lld-%lld/%lld\r\n", first, last,
+                 (long long)st.st_size);
+    long long length = last - first + 1;
+    int n = http_format_head(c->wbuf, sizeof c->wbuf, status, type, length, req->keep_alive, extra);
     if (n < 0) { close(fd); build_error(c, 500, 0, head, NULL); return; }
     c->wlen = (size_t)n;
     c->woff = 0;
     c->keep_alive = req->keep_alive;
-    if (head || st.st_size == 0) {
+    if (head || length == 0) {
         close(fd);
     } else {
         c->file_fd = fd;
-        c->file_off = 0;
-        c->file_end = st.st_size;
+        c->file_off = first;
+        c->file_end = last + 1;
     }
 }
 

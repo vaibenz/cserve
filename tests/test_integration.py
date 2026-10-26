@@ -3,6 +3,7 @@
 Usage: python3 tests/test_integration.py ./cserve-asan
 Uses only the Python standard library.
 """
+import email.utils
 import hashlib
 import http.client
 import os
@@ -314,6 +315,100 @@ class ServerTest(unittest.TestCase):
                 conn.sock.recv(16384)
                 time.sleep(0.1)
 
+    def fetch(self, path, **headers):
+        c = self.client()
+        c.request("GET", path, headers=headers)
+        r = c.getresponse()
+        return r, r.read()
+
+    def test_validators_on_every_file(self):
+        r, _ = self.fetch("/hello.txt")
+        self.assertEqual(r.getheader("Accept-Ranges"), "bytes")
+        self.assertTrue(r.getheader("ETag").startswith('"'))
+        mtime = os.stat(os.path.join(self.root, "hello.txt")).st_mtime
+        self.assertEqual(r.getheader("Last-Modified"), email.utils.formatdate(int(mtime), usegmt=True))
+
+    def test_range_forms(self):
+        cases = {"bytes=0-4": (0, 4), "bytes=6-": (6, 11), "bytes=-3": (9, 11), "bytes=6-1000": (6, 11)}
+        for spec, (a, b) in cases.items():
+            r, body = self.fetch("/hello.txt", Range=spec)
+            self.assertEqual(r.status, 206, spec)
+            self.assertEqual(body, b"hello world\n"[a:b + 1], spec)
+            self.assertEqual(r.getheader("Content-Range"), "bytes %d-%d/12" % (a, b), spec)
+
+    def test_range_in_a_large_file(self):
+        a, b = 3_000_001, 7_654_320
+        r, body = self.fetch("/big.bin", Range="bytes=%d-%d" % (a, b))
+        self.assertEqual(r.status, 206)
+        self.assertEqual(body, self.big[a:b + 1])
+
+    def test_unsatisfiable_range(self):
+        r, _ = self.fetch("/hello.txt", Range="bytes=12-")
+        self.assertEqual(r.status, 416)
+        self.assertEqual(r.getheader("Content-Range"), "bytes */12")
+
+    def test_ignored_ranges_send_the_whole_file(self):
+        for spec in ("bytes=0-1,4-5", "bytes=5-2", "lines=1-2", "bytes=x"):
+            r, body = self.fetch("/hello.txt", Range=spec)
+            self.assertEqual((r.status, body), (200, b"hello world\n"), spec)
+
+    def test_if_none_match(self):
+        r, _ = self.fetch("/hello.txt")
+        etag = r.getheader("ETag")
+        r, body = self.fetch("/hello.txt", **{"If-None-Match": etag})
+        self.assertEqual((r.status, body), (304, b""))
+        self.assertEqual(r.getheader("ETag"), etag)
+        r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale", W/' + etag})
+        self.assertEqual(r.status, 304)  # weak comparison, any entry in the list
+        r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale"'})
+        self.assertEqual(r.status, 200)
+
+    def test_if_modified_since(self):
+        r, _ = self.fetch("/hello.txt")
+        lm = r.getheader("Last-Modified")
+        self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": lm})[0].status, 304)
+        earlier = email.utils.formatdate(email.utils.parsedate_to_datetime(lm).timestamp() - 1, usegmt=True)
+        self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": earlier})[0].status, 200)
+        self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": "yesterday"})[0].status, 200)
+        # If-None-Match takes precedence: a stale ETag means 200 even with a current date.
+        r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale"', "If-Modified-Since": lm})
+        self.assertEqual(r.status, 200)
+
+    def test_if_range(self):
+        r, _ = self.fetch("/hello.txt")
+        etag, lm = r.getheader("ETag"), r.getheader("Last-Modified")
+        self.assertEqual(self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": etag})[0].status, 206)
+        self.assertEqual(self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": lm})[0].status, 206)
+        r, body = self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": '"old"'})
+        self.assertEqual((r.status, body), (200, b"hello world\n"))  # changed since: whole file
+
+    def test_etag_changes_when_the_file_does(self):
+        path = os.path.join(self.root, "changing.txt")
+        with open(path, "w") as f:
+            f.write("one")
+        e1 = self.fetch("/changing.txt")[0].getheader("ETag")
+        with open(path, "w") as f:
+            f.write("two")  # same size, so only the nanosecond mtime tells them apart
+        os.utime(path, ns=(os.stat(path).st_atime_ns, os.stat(path).st_mtime_ns + 1))
+        r, body = self.fetch("/changing.txt", **{"If-None-Match": e1})
+        self.assertEqual((r.status, body), (200, b"two"))
+
+    def test_head_with_range(self):
+        c = self.client()
+        c.request("HEAD", "/big.bin", headers={"Range": "bytes=10-19"})
+        r = c.getresponse()
+        self.assertEqual((r.status, r.getheader("Content-Length"), r.read()), (206, "10", b""))
+
+    def test_resume_a_download_over_keep_alive(self):
+        # How a download manager resumes: the first part, then the rest, on one connection.
+        c = self.client()
+        c.request("GET", "/big.bin", headers={"Range": "bytes=0-1048575"})
+        r = c.getresponse()
+        part1, etag = r.read(), r.getheader("ETag")
+        c.request("GET", "/big.bin", headers={"Range": "bytes=1048576-", "If-Range": etag})
+        part2 = c.getresponse().read()
+        self.assertEqual(part1 + part2, self.big)
+
     def test_idle_connection_is_reaped(self):
         conn = self.raw()
         conn.send(get(self.port))
@@ -391,6 +486,14 @@ class TlsTest(unittest.TestCase):
         r = c.getresponse()
         self.assertEqual(r.status, 200)
         self.assertEqual(hashlib.sha256(r.read()).digest(), hashlib.sha256(self.big).digest())
+
+    def test_range_over_tls(self):
+        # The TLS path reads the file itself in record sized chunks, so it must start at the range.
+        a, b = 16383, 5_000_000
+        c = self.https()
+        c.request("GET", "/big.bin", headers={"Range": "bytes=%d-%d" % (a, b)})
+        r = c.getresponse()
+        self.assertEqual((r.status, r.read()), (206, self.big[a:b + 1]))
 
     def test_slow_reader_over_tls(self):
         # Partial and would-block TLS writes must resume with exactly the bytes that were pending.

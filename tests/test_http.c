@@ -135,6 +135,52 @@ static void test_helpers(void) {
     CHECK(http_format_head(buf, 16, 200, "text/plain", 1, 1, "") == -1);
 }
 
+static void test_range(void) {
+    long long a, b;
+    CHECK(http_parse_range("bytes=0-499", 1000, &a, &b) == 1 && a == 0 && b == 499);
+    CHECK(http_parse_range("bytes=500-", 1000, &a, &b) == 1 && a == 500 && b == 999);
+    CHECK(http_parse_range("bytes=-200", 1000, &a, &b) == 1 && a == 800 && b == 999);
+    CHECK(http_parse_range("bytes=-5000", 1000, &a, &b) == 1 && a == 0 && b == 999);
+    CHECK(http_parse_range("bytes=900-5000", 1000, &a, &b) == 1 && a == 900 && b == 999);
+    CHECK(http_parse_range("bytes=999-999", 1000, &a, &b) == 1 && a == 999 && b == 999);
+    CHECK(http_parse_range("bytes=1000-", 1000, &a, &b) == -1);
+    CHECK(http_parse_range("bytes=-0", 1000, &a, &b) == -1);
+    CHECK(http_parse_range("bytes=0-", 0, &a, &b) == -1);
+    CHECK(http_parse_range("bytes=5-3", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("bytes=0-1,5-6", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("items=0-1", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("bytes=", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("bytes=-", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("bytes=1234567890123456789-", 1000, &a, &b) == 0); /* 19 digits */
+    CHECK(http_parse_range("bytes=0-1x", 1000, &a, &b) == 0);
+}
+
+static void test_conditional_helpers(void) {
+    CHECK(http_parse_date("Sun, 06 Nov 1994 08:49:37 GMT") == 784111777LL);
+    CHECK(http_parse_date("Thu, 01 Jan 1970 00:00:00 GMT") == 0);
+    CHECK(http_parse_date("Mon, 06 Nov 1994 08:49:37 GMT") == -1); /* wrong weekday */
+    CHECK(http_parse_date("Sun, 06 Nov 1994 08:49:37 UTC") == -1);
+    CHECK(http_parse_date("Sunday, 06-Nov-94 08:49:37 GMT") == -1); /* obsolete RFC 850 form */
+    CHECK(http_parse_date("Sat, 29 Feb 2025 00:00:00 GMT") == -1);
+    char d[64];
+    CHECK(http_format_date(d, sizeof d, 784111777LL) > 0 && strcmp(d, "Sun, 06 Nov 1994 08:49:37 GMT") == 0);
+    int roundtrip = 1; /* format then parse, every 37 days and an hour, through 2100 */
+    for (long long t = 0; t < 4102444800LL && roundtrip; t += 86400LL * 37 + 3601)
+        roundtrip = http_format_date(d, sizeof d, t) > 0 && http_parse_date(d) == t;
+    CHECK(roundtrip);
+    CHECK(http_etag_matches("\"abc\"", "\"abc\""));
+    CHECK(http_etag_matches("\"x\", W/\"abc\"", "\"abc\""));
+    CHECK(http_etag_matches("*", "\"abc\""));
+    CHECK(!http_etag_matches("\"abcd\"", "\"abc\""));
+    CHECK(!http_etag_matches("abc", "\"abc\""));
+    CHECK(!http_etag_matches("\"ab", "\"abc\""));
+    http_request r;
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=1-2\r\nIf-None-Match: \"e\"\r\n\r\n", &r) == PARSE_OK);
+    CHECK(strcmp(r.range, "bytes=1-2") == 0 && strcmp(r.if_none_match, "\"e\"") == 0 && r.if_range[0] == 0);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=1-2\r\nRange: bytes=3-4\r\n\r\n", &r) == PARSE_OK);
+    CHECK(r.range[0] == 0); /* two Range headers: ambiguous, so neither is used */
+}
+
 int main(void) {
     test_basic_get();
     test_incomplete();
@@ -146,6 +192,8 @@ int main(void) {
     test_pipelining();
     test_path_safety();
     test_helpers();
+    test_range();
+    test_conditional_helpers();
     printf("%d/%d parser checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;
 }

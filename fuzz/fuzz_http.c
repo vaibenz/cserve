@@ -19,8 +19,13 @@
  *      the rule (no ".." segment, no backslash, absolute).
  *   5. Percent encoding round trips: any bytes without NUL, encoded as %XX and
  *      decoded, come back unchanged.
+ *   6. A satisfiable Range lies inside the file (0 <= first <= last < size),
+ *      and writing it back out as "bytes=first-last" parses to the same range.
+ *   7. Any date that parses is canonical: formatting it again gives back the
+ *      exact input, so a parsed If-Modified-Since always means one instant.
  */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,7 +39,9 @@
 static int same_request(const http_request *a, const http_request *b) {
     return a->method == b->method && strcmp(a->path, b->path) == 0 && a->version_minor == b->version_minor &&
            a->keep_alive == b->keep_alive && a->content_length == b->content_length &&
-           a->header_len == b->header_len;
+           a->header_len == b->header_len && strcmp(a->range, b->range) == 0 &&
+           strcmp(a->if_none_match, b->if_none_match) == 0 &&
+           strcmp(a->if_modified_since, b->if_modified_since) == 0 && strcmp(a->if_range, b->if_range) == 0;
 }
 
 /* The path rule written a second, deliberately naive way. */
@@ -109,8 +116,39 @@ static void check_url_roundtrip(const uint8_t *data, size_t size) {
     CHECK(memcmp(dec, orig, raw) == 0);
 }
 
+static void check_range_and_date(const uint8_t *data, size_t size) {
+    if (size < 8) return;
+    /* The first 8 bytes choose the file size; the rest, as a string, is the header value. */
+    unsigned long long raw = 0;
+    memcpy(&raw, data, 8);
+    long long fsize = (long long)(raw % (1ULL << 50));
+    char v[256];
+    size_t n = size - 8 < sizeof v - 1 ? size - 8 : sizeof v - 1;
+    memcpy(v, data + 8, n);
+    v[n] = '\0';
+
+    long long a, b;
+    int r = http_parse_range(v, fsize, &a, &b);
+    CHECK(r == -1 || r == 0 || r == 1);
+    if (r == 1) {
+        CHECK(0 <= a && a <= b && b < fsize);
+        char again[64];
+        snprintf(again, sizeof again, "bytes=%lld-%lld", a, b);
+        long long a2, b2;
+        CHECK(http_parse_range(again, fsize, &a2, &b2) == 1 && a2 == a && b2 == b);
+    }
+
+    long long t = http_parse_date(v);
+    if (t >= 0 && !strstr(v, ":60 ")) {
+        char d[64];
+        CHECK(http_format_date(d, sizeof d, t) > 0 && strcmp(d, v) == 0);
+    }
+    (void)http_etag_matches(v, "\"1-2-3\"");
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     check_parser((const char *)data, size);
     check_url_roundtrip(data, size);
+    check_range_and_date(data, size);
     return 0;
 }
