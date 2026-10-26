@@ -4,7 +4,7 @@ An event driven HTTP/1.1 and HTTPS static file server written from scratch in C 
 
 I wanted to see how far one small C program could get on plain Linux primitives, with no framework in between, and then how hard it is to make that program hold up against hostile clients. It's a server I can reason about end to end, from the socket all the way to the bytes on the wire.
 
-On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small page (plain HTTP, keep alive), with the load generator competing for the same two CPUs. The request parser has been fuzzed for over an hour with libFuzzer under ASan and UBSan, with six correctness properties checked on every input, and found nothing.
+On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small page (plain HTTP, keep alive), with the load generator competing for the same two CPUs. The request parser has been fuzzed for over an hour with libFuzzer under ASan and UBSan, with seven correctness properties checked on every input, and found nothing.
 
 ## What's in it
 
