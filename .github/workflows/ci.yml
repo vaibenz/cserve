@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev clang
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev clang libclang-rt-dev || sudo apt-get install -y libssl-dev clang libclang-rt-18-dev
       - name: Build
         run: make all
       - name: Unit and integration tests (ASan + UBSan, plain and TLS)
