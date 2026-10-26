@@ -18,7 +18,7 @@ cserve-asan: $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(SAN) -o $@ $(SRC) $(LIBS)
 
 bench/bench: bench/bench.c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -o $@ $< $(LIBS)
 
 tests/test_http: tests/test_http.c src/http.c src/http.h
 	$(CC) $(CFLAGS) $(SAN) -o $@ tests/test_http.c src/http.c

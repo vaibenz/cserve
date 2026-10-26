@@ -5,14 +5,21 @@
  * soon as the previous response has been fully read, recording the latency of
  * every request in a per thread histogram (1 microsecond buckets up to 100 ms).
  *
- * usage: bench [-c connections] [-d seconds] [-p port] [-H host] path
+ * With -s it speaks TLS (certificates are not verified: this measures the
+ * server, not the PKI). With -n every request opens a new connection, which
+ * with -s measures full handshakes per second.
+ *
+ * usage: bench [-c connections] [-d seconds] [-p port] [-H host] [-s] [-n] path
  */
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +30,14 @@
 #include <unistd.h>
 
 #define HIST_BUCKETS 100000 /* 1 us each, so 0 to 100 ms; slower requests land in the last bucket */
+
+static SSL_CTX *g_ctx; /* non NULL with -s */
+static int g_new_conn; /* -n */
+
+typedef struct {
+    int fd;
+    SSL *ssl;
+} link_t;
 
 typedef struct {
     const char *host;
@@ -52,13 +67,44 @@ static int connect_to(const char *host, int port) {
     return fd;
 }
 
+static link_t open_link(const char *host, int port) {
+    link_t l = {connect_to(host, port), NULL};
+    if (l.fd < 0 || !g_ctx) return l;
+    l.ssl = SSL_new(g_ctx);
+    SSL_set_fd(l.ssl, l.fd);
+    if (SSL_connect(l.ssl) != 1) {
+        SSL_free(l.ssl);
+        close(l.fd);
+        ERR_clear_error();
+        return (link_t){-1, NULL};
+    }
+    return l;
+}
+
+static void close_link(link_t *l) {
+    if (l->ssl) { SSL_free(l->ssl); l->ssl = NULL; } /* no close_notify: like a client that just leaves */
+    if (l->fd >= 0) close(l->fd);
+    l->fd = -1;
+}
+
+static ssize_t link_recv(link_t *l, char *buf, size_t n) {
+    if (!l->ssl) return recv(l->fd, buf, n, 0);
+    int r = SSL_read(l->ssl, buf, (int)n);
+    return r > 0 ? r : -1;
+}
+
+static int link_send(link_t *l, const char *buf, size_t n) {
+    if (!l->ssl) return send(l->fd, buf, n, MSG_NOSIGNAL) == (ssize_t)n;
+    return SSL_write(l->ssl, buf, (int)n) == (int)n;
+}
+
 /* Reads one full response. Returns the HTTP status, or -1 on error. */
-static int read_response(int fd, char *buf, size_t cap, uint64_t *bytes) {
+static int read_response(link_t *l, char *buf, size_t cap, uint64_t *bytes) {
     size_t len = 0;
     char *end = NULL;
     while (!end) {
         if (len == cap - 1) return -1;
-        ssize_t n = recv(fd, buf + len, cap - 1 - len, 0);
+        ssize_t n = link_recv(l, buf + len, cap - 1 - len);
         if (n <= 0) return -1;
         len += (size_t)n;
         buf[len] = '\0';
@@ -71,7 +117,7 @@ static int read_response(int fd, char *buf, size_t cap, uint64_t *bytes) {
     long long have = (long long)(len - head);
     *bytes += len;
     while (have < body) {
-        ssize_t n = recv(fd, buf, cap, 0);
+        ssize_t n = link_recv(l, buf, cap);
         if (n <= 0) return -1;
         have += n;
         *bytes += (uint64_t)n;
@@ -82,23 +128,22 @@ static int read_response(int fd, char *buf, size_t cap, uint64_t *bytes) {
 static void *run(void *arg) {
     worker *w = arg;
     char req[512], buf[65536];
-    int rlen = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", w->path, w->host);
-    int fd = connect_to(w->host, w->port);
+    int rlen = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", w->path, w->host,
+                        g_new_conn ? "Connection: close\r\n" : "");
+    link_t l = {-1, NULL};
     while (now() < w->deadline) {
-        if (fd < 0) {
+        double t0 = now(); /* with -n the latency includes connecting (and the handshake) */
+        if (l.fd < 0) l = open_link(w->host, w->port);
+        if (l.fd < 0) {
             w->errors++;
             usleep(1000);
-            fd = connect_to(w->host, w->port);
             continue;
         }
-        double t0 = now();
         int status = -1;
-        if (send(fd, req, (size_t)rlen, MSG_NOSIGNAL) == rlen)
-            status = read_response(fd, buf, sizeof buf, &w->bytes);
+        if (link_send(&l, req, (size_t)rlen)) status = read_response(&l, buf, sizeof buf, &w->bytes);
         if (status < 0) {
             w->errors++;
-            close(fd);
-            fd = connect_to(w->host, w->port);
+            close_link(&l);
             continue;
         }
         uint64_t us = (uint64_t)((now() - t0) * 1e6);
@@ -106,8 +151,9 @@ static void *run(void *arg) {
         w->hist[us < HIST_BUCKETS ? us : HIST_BUCKETS - 1]++;
         w->requests++;
         if (status != 200) w->non_200++;
+        if (g_new_conn) close_link(&l);
     }
-    if (fd >= 0) close(fd);
+    close_link(&l);
     return NULL;
 }
 
@@ -123,21 +169,30 @@ static double percentile(const uint64_t *hist, uint64_t total, double p) {
 int main(int argc, char **argv) {
     int conns = 32, secs = 10, port = 8080, opt;
     const char *host = "127.0.0.1";
-    while ((opt = getopt(argc, argv, "c:d:p:H:")) != -1) {
+    int tls = 0;
+    while ((opt = getopt(argc, argv, "c:d:p:H:sn")) != -1) {
         switch (opt) {
         case 'c': conns = atoi(optarg); break;
         case 'd': secs = atoi(optarg); break;
         case 'p': port = atoi(optarg); break;
         case 'H': host = optarg; break;
+        case 's': tls = 1; break;
+        case 'n': g_new_conn = 1; break;
         default: goto usage;
         }
     }
     if (optind != argc - 1 || conns <= 0 || secs <= 0) {
     usage:
-        fprintf(stderr, "usage: %s [-c connections] [-d seconds] [-p port] [-H host] path\n", argv[0]);
+        fprintf(stderr, "usage: %s [-c connections] [-d seconds] [-p port] [-H host] [-s] [-n] path\n", argv[0]);
         return 2;
     }
 
+    signal(SIGPIPE, SIG_IGN);
+    if (tls) {
+        g_ctx = SSL_CTX_new(TLS_client_method());
+        SSL_CTX_set_verify(g_ctx, SSL_VERIFY_NONE, NULL);
+        SSL_CTX_set_session_cache_mode(g_ctx, SSL_SESS_CACHE_OFF); /* -n: every handshake is a full one */
+    }
     worker *ws = calloc((size_t)conns, sizeof *ws);
     double start = now();
     for (int i = 0; i < conns; i++) {
@@ -159,7 +214,8 @@ int main(int argc, char **argv) {
         free(ws[i].hist);
     }
     double elapsed = now() - start;
-    printf("%d connections, %.1f s, path %s\n", conns, elapsed, argv[optind]);
+    printf("%d connections%s%s, %.1f s, path %s\n", conns, tls ? ", TLS" : "",
+           g_new_conn ? ", new connection per request" : "", elapsed, argv[optind]);
     printf("  requests     %llu (%llu errors, %llu non 200)\n", (unsigned long long)reqs,
            (unsigned long long)errs, (unsigned long long)bad);
     printf("  throughput   %.0f req/s, %.1f MB/s\n", reqs / elapsed, bytes / elapsed / 1e6);
