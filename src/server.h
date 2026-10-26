@@ -6,6 +6,8 @@ typedef struct {
     int port;
     int threads;           /* number of worker event loops */
     int idle_timeout_sec;  /* close keep alive connections idle this long */
+    int header_timeout_sec;/* a request head (and TLS handshake) must arrive within this */
+    int max_conns;         /* open connections across all workers */
     int quiet;
     const char *tls_cert;  /* PEM certificate chain; with tls_key, serve HTTPS */
     const char *tls_key;

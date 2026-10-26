@@ -6,7 +6,9 @@
  *     balances new connections across workers (no shared accept lock, no
  *     thundering herd);
  *   - its own epoll instance, with client sockets registered edge triggered;
- *   - an LRU list of its connections, used to close idle keep alive clients.
+ *   - an LRU list of its connections, used to close idle keep alive clients;
+ *   - a FIFO of connections still waiting for a complete request head, which
+ *     enforces the header deadline (the Slowloris defence; see head_start).
  *
  * Nothing is shared between workers except read only configuration, so the
  * hot path takes no locks at all.
@@ -51,6 +53,7 @@
 #define MAX_EVENTS 256
 #define SENDFILE_CHUNK (1 << 20)
 #define TLS_CHUNK 16384 /* the largest TLS record */
+#define MIN_SEND_RATE 1024 /* bytes/s a downloading client must take to count as active */
 
 typedef struct conn {
     int fd;
@@ -62,7 +65,11 @@ typedef struct conn {
     int eof;                   /* peer has closed its write side */
     int64_t last_active;        /* ms, monotonic */
     struct conn *prev, *next;  /* LRU list, most recently active first */
+    int64_t head_deadline;     /* ms; meaningful while in the head FIFO */
+    struct conn *hprev, *hnext;
+    int in_head_fifo;
     uint64_t acked;            /* bytes the client had acknowledged at the last idle check */
+    int64_t acked_at;          /* ms, when that was read */
     SSL *ssl;                  /* NULL for plain HTTP */
     int handshaked;
     char *tbuf;                /* TLS only: file bytes read but not yet fully encrypted and sent */
@@ -75,7 +82,9 @@ typedef struct {
     int id, epfd, listen_fd;
     const server_config *cfg;
     conn *lru_head, *lru_tail;
-    unsigned long long accepted, responses;
+    conn *head_first, *head_last; /* waiting for a request head, earliest deadline first */
+    int nconns, max_conns;
+    unsigned long long accepted, responses, head_timeouts, evicted, refused;
     pthread_t tid;
 } worker;
 
@@ -115,8 +124,36 @@ static void conn_touch(worker *w, conn *c) {
     if (w->lru_head != c) { lru_unlink(w, c); lru_push_front(w, c); }
 }
 
+/*
+ * Slowloris holds connections open by sending a request head a byte at a time,
+ * which keeps every connection active as far as the idle timeout is concerned.
+ * So a head has a deadline of its own, counted from the connection (covering
+ * the TLS handshake) or from the first byte of a later request, and not reset
+ * by further bytes. Every deadline is now + the same timeout, so appending
+ * keeps the FIFO sorted and the sweep only ever looks at its front.
+ */
+static void head_start(worker *w, conn *c) {
+    if (c->in_head_fifo) return; /* the deadline runs from the first byte, not the latest */
+    c->head_deadline = now_ms() + (int64_t)w->cfg->header_timeout_sec * 1000;
+    c->hnext = NULL;
+    c->hprev = w->head_last;
+    if (w->head_last) w->head_last->hnext = c; else w->head_first = c;
+    w->head_last = c;
+    c->in_head_fifo = 1;
+}
+
+static void head_done(worker *w, conn *c) {
+    if (!c->in_head_fifo) return;
+    if (c->hprev) c->hprev->hnext = c->hnext; else w->head_first = c->hnext;
+    if (c->hnext) c->hnext->hprev = c->hprev; else w->head_last = c->hprev;
+    c->hprev = c->hnext = NULL;
+    c->in_head_fifo = 0;
+}
+
 static void conn_close(worker *w, conn *c) {
     lru_unlink(w, c);
+    head_done(w, c);
+    w->nconns--;
     if (c->ssl) tls_close(c->ssl);
     free(c->tbuf);
     if (c->file_fd >= 0) close(c->file_fd);
@@ -132,9 +169,11 @@ static void conn_close(worker *w, conn *c) {
  * write, when the server has nothing left to send but the kernel still holds
  * megabytes of the response. For a slow client that is still reading, neither
  * is idle. So an expired connection is judged by progress instead: if the
- * client has acknowledged more bytes since the last check, it is taking data
- * and the connection stays. A client that stops reading acknowledges nothing
- * and is reaped as before.
+ * client has acknowledged at least MIN_SEND_RATE bytes per second since the
+ * last check, it is taking data and the connection stays for another timeout.
+ * A client that stops reading, or reads a trickle to hold the connection open
+ * (a slow read attack), is reaped. During a response this check is the only
+ * thing that keeps a connection alive; see conn_handle.
  *
  * The acknowledged byte count is used rather than the size of the send queue
  * because the queue is a sawtooth: the check runs one timeout after the last
@@ -145,19 +184,14 @@ static int made_progress(conn *c) {
     struct tcp_info ti;
     socklen_t len = sizeof ti;
     if (getsockopt(c->fd, IPPROTO_TCP, TCP_INFO, &ti, &len) < 0) return 0;
-    int progressed = ti.tcpi_bytes_acked != c->acked;
-    c->acked = ti.tcpi_bytes_acked;
-    return progressed;
-}
-
-/* Idle connections sit at the tail, so this is O(number expired). */
-static void sweep_idle(worker *w) {
+    /* At least MIN_SEND_RATE over the interval: a trickle, a slow read attack taking a few
+     * bytes at a time to hold the connection open, does not count as taking data. */
     int64_t now = now_ms();
-    while (w->lru_tail && now - w->lru_tail->last_active >= (int64_t)w->cfg->idle_timeout_sec * 1000) {
-        conn *c = w->lru_tail;
-        if (made_progress(c)) conn_touch(w, c); /* a slow reader, not an idle one */
-        else conn_close(w, c);
-    }
+    uint64_t needed = (uint64_t)(now - c->acked_at) * MIN_SEND_RATE / 1000;
+    int progressed = ti.tcpi_bytes_acked >= c->acked + (needed > 0 ? needed : 1);
+    c->acked = ti.tcpi_bytes_acked;
+    c->acked_at = now;
+    return progressed;
 }
 
 /* ---------- safe file opening ---------- */
@@ -393,7 +427,7 @@ static int conn_flush(conn *c) {
         if (chunk > SENDFILE_CHUNK) chunk = SENDFILE_CHUNK;
         /* Zero copy: the kernel moves page cache pages straight to the socket. */
         ssize_t n = sendfile(c->fd, c->file_fd, &c->file_off, chunk);
-        if (n > 0) continue;
+        if (n > 0) { continue; }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
         return -1; /* n == 0 means the file shrank underneath us */
@@ -419,7 +453,10 @@ static int parse_status(parse_result pr) {
  * The loop also handles pipelined requests: several requests may sit in rbuf.
  */
 static void conn_handle(worker *w, conn *c) {
-    conn_touch(w, c);
+    /* While a response is going out, events do not count as activity: only the rate at which
+     * the client takes data does, judged by the sweep (see made_progress). Otherwise a client
+     * reading a trickle, or sending a byte now and then, could hold the connection forever. */
+    if (c->wlen == 0 && c->file_fd < 0) conn_touch(w, c);
     if (c->ssl && !c->handshaked) {
         int r = tls_handshake(c->ssl);
         if (r == TLS_WANT) return; /* idle reaping also covers clients that stall mid handshake */
@@ -439,7 +476,12 @@ static void conn_handle(worker *w, conn *c) {
 
         http_request req;
         parse_result pr = http_parse_request(c->rbuf, c->rlen, &req);
-        if (pr == PARSE_INCOMPLETE) { if (c->eof) conn_close(w, c); return; }
+        if (pr == PARSE_INCOMPLETE) {
+            if (c->eof) { conn_close(w, c); return; }
+            head_start(w, c); /* part of a head is here: the rest must follow in time */
+            return;
+        }
+        head_done(w, c);
         if (pr != PARSE_OK) {
             build_error(c, parse_status(pr), 0, 0, NULL);
             c->rlen = 0;
@@ -459,6 +501,19 @@ static void accept_all(worker *w) {
             if (errno != EAGAIN && errno != EWOULDBLOCK && !w->cfg->quiet) perror("accept4");
             return;
         }
+        if (w->nconns >= w->max_conns) {
+            /* Full. Make room by closing the longest idle keep alive connection, one that is
+             * between requests; if even that one is busy, refuse the newcomer instead. */
+            conn *old = w->lru_tail;
+            if (old && old->rlen == 0 && old->wlen == 0 && old->file_fd < 0 && !old->in_head_fifo) {
+                conn_close(w, old);
+                w->evicted++;
+            } else {
+                close(fd);
+                w->refused++;
+                continue;
+            }
+        }
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         conn *c = calloc(1, sizeof *c);
@@ -471,8 +526,31 @@ static void accept_all(worker *w) {
         struct epoll_event ev = {.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.ptr = c};
         if (epoll_ctl(w->epfd, EPOLL_CTL_ADD, fd, &ev) < 0) { close(fd); free(c); continue; }
         lru_push_front(w, c);
-        c->last_active = now_ms();
+        c->last_active = c->acked_at = now_ms();
+        head_start(w, c); /* the first request head, and with TLS the handshake, are on the clock */
+        w->nconns++;
         w->accepted++;
+    }
+}
+
+/* Idle connections sit at the tail of the LRU, and expired heads at the front of
+ * the head FIFO, so this is O(number expired). */
+static void sweep_idle(worker *w) {
+    int64_t now = now_ms();
+    while (w->head_first && now >= w->head_first->head_deadline) {
+        conn *c = w->head_first;
+        w->head_timeouts++;
+        /* A best effort 408 on plain HTTP or a finished handshake; then close either way. */
+        if (!c->ssl || c->handshaked) {
+            build_error(c, 408, 0, 0, NULL);
+            (void)conn_send(c, c->wbuf, c->wlen, 0);
+        }
+        conn_close(w, c);
+    }
+    while (w->lru_tail && now - w->lru_tail->last_active >= (int64_t)w->cfg->idle_timeout_sec * 1000) {
+        conn *c = w->lru_tail;
+        if (made_progress(c)) conn_touch(w, c); /* a slow reader, not an idle one */
+        else conn_close(w, c);
     }
 }
 
@@ -531,6 +609,7 @@ int server_run(const server_config *cfg) {
         worker *w = &workers[i];
         w->id = i;
         w->cfg = cfg;
+        w->max_conns = (cfg->max_conns + cfg->threads - 1) / cfg->threads;
         w->listen_fd = make_listener(cfg->port);
         w->epfd = epoll_create1(EPOLL_CLOEXEC);
         if (w->listen_fd < 0 || w->epfd < 0) {
@@ -549,15 +628,20 @@ int server_run(const server_config *cfg) {
     for (int i = 0; i < cfg->threads; i++)
         pthread_create(&workers[i].tid, NULL, worker_main, &workers[i]);
 
-    unsigned long long accepted = 0, responses = 0;
+    unsigned long long accepted = 0, responses = 0, head_timeouts = 0, evicted = 0, refused = 0;
     for (int i = 0; i < cfg->threads; i++) {
         pthread_join(workers[i].tid, NULL);
         accepted += workers[i].accepted;
         responses += workers[i].responses;
+        head_timeouts += workers[i].head_timeouts;
+        evicted += workers[i].evicted;
+        refused += workers[i].refused;
         close(workers[i].listen_fd);
         close(workers[i].epfd);
     }
-    if (!cfg->quiet) printf("\ncserve stopped: %llu connections, %llu responses\n", accepted, responses);
+    if (!cfg->quiet)
+        printf("\ncserve stopped: %llu connections, %llu responses, %llu header timeouts, %llu evicted, %llu "
+               "refused\n", accepted, responses, head_timeouts, evicted, refused);
     free(workers);
     close(g_root_fd);
     if (g_tls) tls_free_context(g_tls);

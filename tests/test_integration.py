@@ -63,6 +63,18 @@ class RawConn:
         except socket.timeout:
             return False
 
+    def is_gone(self, wait=2.0):
+        """Closed by the server, after whatever it sent last (a 408, say) has been read."""
+        self.sock.settimeout(wait)
+        try:
+            while self.sock.recv(65536):
+                pass
+            return True
+        except (ConnectionResetError, BrokenPipeError):
+            return True
+        except socket.timeout:
+            return False
+
     def close(self):
         self.sock.close()
 
@@ -414,6 +426,151 @@ class ServerTest(unittest.TestCase):
         conn.send(get(self.port))
         conn.response()
         self.assertTrue(conn.is_closed(wait=5.0))  # server runs with -i 2
+
+
+class AttackTest(unittest.TestCase):
+    """Resource exhaustion: Slowloris, slow reads, and running out of connections.
+
+    The server runs with a 2 s header deadline, a 30 s idle timeout (so only the
+    defence under test can close a connection), one worker and at most 64
+    connections.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = os.path.join(cls.tmp.name, "www")
+        os.makedirs(root)
+        with open(os.path.join(root, "hello.txt"), "w") as f:
+            f.write("hello world\n")
+        with open(os.path.join(root, "big.bin"), "wb") as f:
+            f.write(os.urandom(8 * 1024 * 1024))
+        cls.port, cls.proc = start_server(root, ["-t", "1", "-i", "30", "-H", "2", "-m", "64"])
+
+    @classmethod
+    def tearDownClass(cls):
+        stop_server(cls.proc)
+        cls.tmp.cleanup()
+
+    def raw(self):
+        conn = RawConn(self.port)
+        self.addCleanup(conn.close)
+        return conn
+
+    def served(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request("GET", "/hello.txt")
+            r = c.getresponse()
+            return r.status == 200 and r.read() == b"hello world\n"
+        finally:
+            c.close()
+
+    def test_slowloris_gets_408_at_the_deadline(self):
+        # One header byte every 0.25 s keeps the connection busy forever as far as an idle
+        # timeout can tell. The head deadline does not move, so it ends at about 2 s.
+        conn = self.raw()
+        conn.send(b"GET /hello.txt HTTP/1.1\r\nHost: a\r\n")
+        start = time.time()
+        with self.assertRaises((ConnectionError, BrokenPipeError)):
+            for _ in range(40):
+                conn.send(b"X")
+                time.sleep(0.25)
+        self.assertLess(time.time() - start, 4.5)
+
+    def test_slowloris_response_is_408(self):
+        conn = self.raw()
+        conn.send(b"GET /hello.txt HTTP/1.1\r\nHost: a\r\n")
+        time.sleep(3.5)
+        status, _, _ = conn.response()
+        self.assertEqual(status, 408)
+        self.assertTrue(conn.is_closed())
+
+    def test_silent_connection_is_closed_at_the_deadline(self):
+        conn = self.raw()
+        start = time.time()
+        self.assertEqual(conn.response()[0], 408)
+        self.assertTrue(conn.is_closed())
+        self.assertLess(time.time() - start, 4.0)
+
+    def test_deadline_is_per_request_not_per_connection(self):
+        # A keep alive client that pauses between requests is governed by the idle timeout:
+        # each new head gets a fresh 2 s from its first byte.
+        conn = self.raw()
+        for _ in range(3):
+            conn.send(get(self.port))
+            self.assertEqual(conn.response()[0], 200)
+            time.sleep(2.5)
+
+    def test_attack_does_not_stop_service(self):
+        # 50 Slowloris connections at once: real clients are still served throughout, and every
+        # attacker is gone shortly after the deadline.
+        attackers = [RawConn(self.port) for _ in range(50)]
+        for a in attackers:
+            self.addCleanup(a.close)
+            a.send(b"GET / HTTP/1.1\r\n")
+        for _ in range(6):
+            for a in attackers:
+                try:
+                    a.send(b"X")
+                except OSError:
+                    pass
+            self.assertTrue(self.served())
+            time.sleep(0.5)
+        self.assertTrue(all(a.is_gone(wait=2.0) for a in attackers))
+
+    def test_full_server_evicts_the_longest_idle_connection(self):
+        idle = []
+        for _ in range(64):  # fill every slot with an idle keep alive connection
+            conn = self.raw()
+            conn.send(get(self.port))
+            self.assertEqual(conn.response()[0], 200)
+            idle.append(conn)
+            time.sleep(0.002)
+        self.assertTrue(self.served())  # room is made rather than the newcomer refused
+        self.assertTrue(idle[0].is_closed(wait=2.0))  # the oldest one went
+        self.assertFalse(idle[-1].is_closed(wait=0.2))
+
+    def test_full_server_of_busy_connections_refuses(self):
+        # When every slot holds a connection mid request, nothing can be evicted: the newcomer is
+        # refused, and served again once the deadline has cleared the attackers.
+        busy = []
+        for _ in range(64):
+            conn = self.raw()
+            conn.send(b"GET / HTTP/1.1\r\n")
+            busy.append(conn)
+        time.sleep(0.2)
+        with self.assertRaises((ConnectionError, OSError, http.client.HTTPException)):
+            self.served()
+        time.sleep(2.5)
+        self.assertTrue(self.served())
+
+    def test_slow_read_is_reaped(self):
+        # The reverse attack: request a large file and take it a trickle at a time, 4 KB every 6 s
+        # (under 700 B/s), below the 1 KB/s floor. The small receive window is set before
+        # connecting, so every 4 KB read reopens it and the server sees new bytes acknowledged
+        # within each 8 s idle interval: "any progress" would keep this connection forever.
+        port, proc = start_server(self.tmp.name + "/www", ["-t", "1", "-i", "8"])
+        self.addCleanup(stop_server, proc)
+        sock = socket.socket()
+        self.addCleanup(sock.close)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        sock.connect(("127.0.0.1", port))
+        sock.settimeout(5)
+        sock.sendall(get(port, "/big.bin"))
+        start = time.time()
+        with self.assertRaises((ConnectionResetError, BrokenPipeError)):
+            while time.time() - start < 40:
+                got = 0
+                while got < 4096:
+                    chunk = sock.recv(4096 - got)
+                    self.assertTrue(chunk)
+                    got += len(chunk)
+                time.sleep(6.0)
+                # Once the server has closed its socket, a byte sent to it is answered with a reset.
+                # (Reading alone cannot tell: the kernel still delivers what was queued before.)
+                sock.send(b"G")
+        self.assertLess(time.time() - start, 30)
 
 
 class TlsTest(unittest.TestCase):
