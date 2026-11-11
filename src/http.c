@@ -338,6 +338,12 @@ const char *http_mime_type(const char *path) {
         {".gif", "image/gif"},   {".svg", "image/svg+xml"}, {".webp", "image/webp"},
         {".ico", "image/x-icon"}, {".pdf", "application/pdf"}, {".wasm", "application/wasm"},
         {".woff2", "font/woff2"}, {".mp4", "video/mp4"},
+        {".mjs", "text/javascript; charset=utf-8"}, {".map", "application/json"},
+        {".csv", "text/csv; charset=utf-8"},   {".avif", "image/avif"},
+        {".woff", "font/woff"},  {".ttf", "font/ttf"},   {".otf", "font/otf"},
+        {".webm", "video/webm"}, {".mp3", "audio/mpeg"}, {".ogg", "audio/ogg"},
+        {".wav", "audio/wav"},   {".zip", "application/zip"}, {".gz", "application/gzip"},
+        {".webmanifest", "application/manifest+json"},
     };
     for (size_t i = 0; i < sizeof table / sizeof table[0]; i++)
         if (strcasecmp(dot, table[i].ext) == 0) return table[i].type;
@@ -372,6 +378,7 @@ int http_format_head(char *out, size_t outsz, int status, const char *content_ty
                      "HTTP/1.1 %d %s\r\n"
                      "Server: cserve\r\n"
                      "Date: %s\r\n"
+                     "X-Content-Type-Options: nosniff\r\n"
                      "%s%s%s"
                      "%s"
                      "Connection: %s\r\n"

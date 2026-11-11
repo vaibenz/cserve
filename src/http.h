@@ -74,6 +74,8 @@ const char *http_status_text(int status);
 
 /* Writes a response head into out. extra_headers may be "" and must end in
  * CRLF when non empty. A negative content_length omits the header (304).
+ * Every response carries X-Content-Type-Options: nosniff, so a browser trusts
+ * the Content-Type instead of sniffing, say, a user's .txt file as HTML.
  * Returns bytes written, or -1 if out is too small. */
 int http_format_head(char *out, size_t outsz, int status, const char *content_type,
                      long long content_length, int keep_alive, const char *extra_headers);

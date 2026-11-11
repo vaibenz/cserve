@@ -162,6 +162,7 @@ class ServerTest(unittest.TestCase):
         r = c.getresponse()
         self.assertEqual((r.status, r.read()), (200, b"hello world\n"))
         self.assertTrue(r.getheader("Date"))
+        self.assertEqual(r.getheader("X-Content-Type-Options"), "nosniff")
 
     def test_directory_index_and_percent_decoding(self):
         c = self.client()

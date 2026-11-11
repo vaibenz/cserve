@@ -125,6 +125,18 @@ static void test_helpers(void) {
     CHECK(strncmp(http_mime_type("/x/index.HTML"), "text/html", 9) == 0);
     CHECK(strcmp(http_mime_type("/a.png"), "image/png") == 0);
     CHECK(strcmp(http_mime_type("/dir.d/noext"), "application/octet-stream") == 0);
+    CHECK(strncmp(http_mime_type("/app.mjs"), "text/javascript", 15) == 0);
+    CHECK(strcmp(http_mime_type("/a.AVIF"), "image/avif") == 0);
+    CHECK(strcmp(http_mime_type("/f.woff"), "font/woff") == 0);
+    CHECK(strcmp(http_mime_type("/f.woff2"), "font/woff2") == 0);
+    CHECK(strcmp(http_mime_type("/site.webmanifest"), "application/manifest+json") == 0);
+    CHECK(strcmp(http_mime_type("/a.tar.gz"), "application/gzip") == 0);
+
+    char head[512];
+    CHECK(http_format_head(head, sizeof head, 404, "text/html", 5, 0, "") > 0);
+    CHECK(strstr(head, "\r\nX-Content-Type-Options: nosniff\r\n") != NULL);
+    CHECK(http_format_head(head, sizeof head, 304, NULL, -1, 1, "ETag: \"a\"\r\n") > 0);
+    CHECK(strstr(head, "\r\nX-Content-Type-Options: nosniff\r\n") != NULL);
     char buf[512];
     int n = http_format_head(buf, sizeof buf, 404, "text/plain", 7, 0, "");
     CHECK(n > 0);
