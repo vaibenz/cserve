@@ -64,9 +64,12 @@ static void check_parser(const char *buf, size_t size) {
           r == PARSE_URI_TOO_LONG || r == PARSE_BAD_VERSION);
     if (r == PARSE_INCOMPLETE) CHECK(size < MAX_HEADERS_SIZE);
 
-    /* Find where the head ends independently of the parser. */
+    /* Find where the head ends independently of the parser. Empty lines before the request
+     * line are ignored (RFC 9112 section 2.2) and belong to the head that follows them. */
+    size_t start = 0;
+    while (start + 1 < size && buf[start] == '\r' && buf[start + 1] == '\n') start += 2;
     size_t head = 0;
-    for (size_t i = 0; i + 3 < size; i++)
+    for (size_t i = start; i + 3 < size; i++)
         if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
             head = i + 4;
             break;

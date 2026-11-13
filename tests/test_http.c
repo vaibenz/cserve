@@ -104,6 +104,21 @@ static void test_pipelining(void) {
     CHECK(parse(rest, &r) == PARSE_OK && strcmp(r.path, "/2") == 0);
 }
 
+static void test_leading_empty_lines(void) {
+    http_request r;
+    const char *req = "\r\n\r\nGET /x HTTP/1.1\r\nHost: a\r\n\r\n";
+    CHECK(parse(req, &r) == PARSE_OK && strcmp(r.path, "/x") == 0);
+    CHECK(r.header_len == strlen(req)); /* the empty lines are consumed with the request */
+    CHECK(parse("\r\n", &r) == PARSE_INCOMPLETE);
+    CHECK(parse("\r\nGET /x HTTP/1.1\r\nHost: a\r\n", &r) == PARSE_INCOMPLETE);
+    CHECK(parse("\r\n \r\nGET /x HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("\n\nGET /x HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR); /* bare LF still refused */
+    /* A buffer full of nothing but CRLFs is too large, not forever incomplete. */
+    static char crlfs[MAX_HEADERS_SIZE];
+    for (size_t i = 0; i < sizeof crlfs; i += 2) { crlfs[i] = '\r'; crlfs[i + 1] = '\n'; }
+    CHECK(http_parse_request(crlfs, sizeof crlfs, &r) == PARSE_TOO_LARGE);
+}
+
 static void test_path_safety(void) {
     CHECK(http_path_is_safe("/") == 1);
     CHECK(http_path_is_safe("/a/b.txt") == 1);
@@ -202,6 +217,7 @@ int main(void) {
     test_versions_and_headers();
     test_limits();
     test_pipelining();
+    test_leading_empty_lines();
     test_path_safety();
     test_helpers();
     test_range();

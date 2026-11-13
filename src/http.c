@@ -95,7 +95,7 @@ static void copy_value(char *dst, size_t dstsz, const char *v, size_t n, unsigne
     dst[n] = '\0';
 }
 
-parse_result http_parse_request(const char *buf, size_t len, http_request *req) {
+static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     const char *end = find_head_end(buf, len);
     if (!end) return len >= MAX_HEADERS_SIZE ? PARSE_TOO_LARGE : PARSE_INCOMPLETE;
     size_t head_len = (size_t)(end - buf) + 4;
@@ -203,6 +203,24 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req) 
     if (req->content_length < 0) req->content_length = 0;
     req->keep_alive = req->version_minor == 1 ? !saw_close : (saw_keep_alive && !saw_close);
     return PARSE_OK;
+}
+
+/*
+ * RFC 9112 section 2.2: a server SHOULD ignore at least one empty line (CRLF)
+ * received before the request line. Some clients send a stray CRLF after a
+ * request body, which would otherwise turn the next pipelined request into a
+ * 400. The skipped bytes count towards header_len, so the caller consumes
+ * them, and towards MAX_HEADERS_SIZE, so a stream of CRLFs cannot hold a
+ * connection open without ever sending a request.
+ */
+parse_result http_parse_request(const char *buf, size_t len, http_request *req) {
+    size_t skip = 0;
+    while (skip + 1 < len && buf[skip] == '\r' && buf[skip + 1] == '\n') skip += 2;
+    parse_result pr = parse_head(buf + skip, len - skip, req);
+    if (pr == PARSE_INCOMPLETE && len >= MAX_HEADERS_SIZE) return PARSE_TOO_LARGE;
+    if (pr != PARSE_OK) return pr;
+    req->header_len += skip;
+    return req->header_len > MAX_HEADERS_SIZE ? PARSE_TOO_LARGE : PARSE_OK;
 }
 
 /* Parses a decimal of at most 18 digits (no overflow). Returns digits read, or 0. */

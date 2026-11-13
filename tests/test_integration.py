@@ -216,6 +216,13 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([conn.response()[0] for _ in range(3)], [200, 200, 404])
         conn.close()
 
+    def test_empty_lines_between_pipelined_requests(self):
+        # RFC 9112 section 2.2: a stray CRLF before a request line is ignored, not a 400.
+        conn = self.raw()
+        conn.send(get(self.port, "/hello.txt") + b"\r\n" + get(self.port, "/hello.txt"))
+        self.assertEqual([conn.response()[0] for _ in range(2)], [200, 200])
+        conn.close()
+
     def test_request_split_across_packets(self):
         conn = self.raw()
         for b in get(self.port):
