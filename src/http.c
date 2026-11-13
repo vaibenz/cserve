@@ -237,7 +237,8 @@ static int parse_digits(const char **p, long long *out) {
 }
 
 int http_parse_range(const char *v, long long size, long long *first, long long *last) {
-    if (strncmp(v, "bytes=", 6) != 0) return 0; /* other units are ignored, as RFC 9110 allows */
+    /* Range unit names are case insensitive (RFC 9110 section 14.1); other units are ignored. */
+    if (strncasecmp(v, "bytes=", 6) != 0) return 0;
     const char *p = v + 6;
     while (is_ows(*p)) p++;
     long long a = -1, b = -1;

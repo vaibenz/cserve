@@ -176,6 +176,8 @@ static void test_range(void) {
     CHECK(http_parse_range("bytes=5-3", 1000, &a, &b) == 0);
     CHECK(http_parse_range("bytes=0-1,5-6", 1000, &a, &b) == 0);
     CHECK(http_parse_range("items=0-1", 1000, &a, &b) == 0);
+    CHECK(http_parse_range("Bytes=0-1", 1000, &a, &b) == 1 && a == 0 && b == 1); /* unit is case insensitive */
+    CHECK(http_parse_range("BYTES=-1", 1000, &a, &b) == 1 && a == 999 && b == 999);
     CHECK(http_parse_range("bytes=", 1000, &a, &b) == 0);
     CHECK(http_parse_range("bytes=-", 1000, &a, &b) == 0);
     CHECK(http_parse_range("bytes=1234567890123456789-", 1000, &a, &b) == 0); /* 19 digits */

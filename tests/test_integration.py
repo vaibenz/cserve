@@ -351,7 +351,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(r.getheader("Last-Modified"), email.utils.formatdate(int(mtime), usegmt=True))
 
     def test_range_forms(self):
-        cases = {"bytes=0-4": (0, 4), "bytes=6-": (6, 11), "bytes=-3": (9, 11), "bytes=6-1000": (6, 11)}
+        cases = {"bytes=0-4": (0, 4), "bytes=6-": (6, 11), "bytes=-3": (9, 11), "bytes=6-1000": (6, 11), "Bytes=0-4": (0, 4)}
         for spec, (a, b) in cases.items():
             r, body = self.fetch("/hello.txt", Range=spec)
             self.assertEqual(r.status, 206, spec)
