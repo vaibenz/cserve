@@ -638,7 +638,8 @@ int server_run(const server_config *cfg) {
         worker *w = &workers[i];
         w->id = i;
         w->cfg = cfg;
-        w->max_conns = (cfg->max_conns + cfg->threads - 1) / cfg->threads;
+        /* Rounded up without computing max_conns + threads - 1, which overflows near INT_MAX. */
+        w->max_conns = cfg->max_conns / cfg->threads + (cfg->max_conns % cfg->threads != 0);
         w->spare_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
         w->listen_fd = make_listener(cfg->port);
         w->epfd = epoll_create1(EPOLL_CLOEXEC);

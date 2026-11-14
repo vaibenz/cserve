@@ -748,5 +748,30 @@ class TlsTest(unittest.TestCase):
         self.assertTrue(conn.is_closed(wait=5.0))  # server runs with -i 2
 
 
+class OptionsTest(unittest.TestCase):
+    def run_binary(self, args):
+        try:
+            return subprocess.run([BINARY, "-q"] + args, capture_output=True, timeout=3)
+        except subprocess.TimeoutExpired:
+            self.fail(f"{args} started a server instead of being refused")
+
+    def test_malformed_numbers_are_refused(self):
+        for args in (["-p", "80x"], ["-p", "0"], ["-t", "2threads"], ["-i", "99999999999"],
+                     ["-H", ""], ["-m", "-5"], ["-p", "65536"]):
+            r = self.run_binary(args + ["-r", "/nonexistent"])
+            self.assertEqual(r.returncode, 2, args)
+            self.assertIn(b"usage", r.stderr, args)
+
+    def test_largest_connection_cap_does_not_overflow(self):
+        # The per worker share used to be computed as (max + threads - 1) / threads.
+        with tempfile.TemporaryDirectory() as root:
+            port, proc = start_server(root, ["-m", "2147483647"])
+            conn = RawConn(port)
+            conn.send(get(port, "/"))
+            self.assertEqual(conn.response()[0], 404)
+            conn.close()
+            stop_server(proc)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

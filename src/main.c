@@ -1,6 +1,8 @@
 #include "server.h"
 
+#include <errno.h>
 #include <getopt.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -24,6 +26,17 @@ static void usage(const char *prog) {
             prog);
 }
 
+/* A whole positive number that fits in an int, or 0. atoi would take "80x" as 80
+ * and turn an overflowing value into some other number (undefined, in fact), so
+ * a typo would quietly start a server configured differently from what was asked. */
+static int positive_int(const char *s) {
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE || v <= 0 || v > INT_MAX) return 0;
+    return (int)v;
+}
+
 int main(int argc, char **argv) {
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
     server_config cfg = {.root = "./www", .port = 8080, .threads = cpus > 0 ? (int)cpus : 1,
@@ -32,12 +45,12 @@ int main(int argc, char **argv) {
     int opt;
     while ((opt = getopt(argc, argv, "p:r:t:i:H:m:c:k:qh")) != -1) {
         switch (opt) {
-        case 'p': cfg.port = atoi(optarg); break;
+        case 'p': cfg.port = positive_int(optarg); break;
         case 'r': cfg.root = optarg; break;
-        case 't': cfg.threads = atoi(optarg); break;
-        case 'i': cfg.idle_timeout_sec = atoi(optarg); break;
-        case 'H': cfg.header_timeout_sec = atoi(optarg); break;
-        case 'm': cfg.max_conns = atoi(optarg); break;
+        case 't': cfg.threads = positive_int(optarg); break;
+        case 'i': cfg.idle_timeout_sec = positive_int(optarg); break;
+        case 'H': cfg.header_timeout_sec = positive_int(optarg); break;
+        case 'm': cfg.max_conns = positive_int(optarg); break;
         case 'c': cfg.tls_cert = optarg; break;
         case 'k': cfg.tls_key = optarg; break;
         case 'q': cfg.quiet = 1; break;
