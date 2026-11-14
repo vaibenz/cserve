@@ -131,6 +131,18 @@ static void test_path_safety(void) {
     CHECK(http_path_is_safe("/a\\..\\b") == 0);
     CHECK(http_path_is_safe("relative") == 0);
 
+    char enc[64];
+    CHECK(http_url_encode("docs", enc, sizeof enc) == 4 && strcmp(enc, "docs") == 0);
+    CHECK(http_url_encode("a b%?#", enc, sizeof enc) > 0 && strcmp(enc, "a%20b%25%3F%23") == 0);
+    CHECK(http_url_encode("mailto:x", enc, sizeof enc) > 0 && strcmp(enc, "mailto%3Ax") == 0);
+    CHECK(http_url_encode("\xc3\xa9", enc, sizeof enc) > 0 && strcmp(enc, "%C3%A9") == 0);
+    CHECK(http_url_encode("abc", enc, 3) == -1); /* no room for the NUL */
+    CHECK(http_url_encode("%", enc, 3) == -1);
+    char dec[64]; /* decoding the encoding gives back the name */
+    const char *name = "we\x01ird: name?#%.txt";
+    int en = http_url_encode(name, enc, sizeof enc);
+    CHECK(en > 0 && http_url_decode(enc, (size_t)en, dec, sizeof dec) >= 0 && strcmp(dec, name) == 0);
+
     http_request r; /* an encoded traversal decodes first, then is caught */
     CHECK(parse("GET /%2e%2e/secret HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK);
     CHECK(http_path_is_safe(r.path) == 0);

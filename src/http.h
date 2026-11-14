@@ -47,6 +47,12 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req);
  * escape, an encoded NUL byte, or if dst is too small. */
 int http_url_decode(const char *src, size_t n, char *dst, size_t dstsz);
 
+/* Percent encodes src into dst for use in a URL path: everything but unreserved
+ * characters and the sub delimiters safe in a path segment is escaped, ':' too,
+ * so a relative reference can never be read as a scheme. Returns the encoded
+ * length, or -1 if dst is too small. */
+int http_url_encode(const char *src, char *dst, size_t dstsz);
+
 /* 1 if path is absolute and has no ".." segment, else 0. */
 int http_path_is_safe(const char *path);
 

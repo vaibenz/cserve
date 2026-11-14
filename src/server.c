@@ -279,6 +279,21 @@ static void build_response(conn *c, const http_request *req) {
     int is_index = 0;
     if (fstat(fd, &st) < 0) { close(fd); build_error(c, 500, 0, head, NULL); return; }
     if (S_ISDIR(st.st_mode)) { /* serve the directory's index.html, never a listing */
+        /* "/docs" must become "/docs/" first, or the page's relative links ("style.css") would
+         * resolve against "/" instead of "/docs/". The Location is relative (RFC 9110 section
+         * 10.2.2 allows it), just the last segment plus a slash, so it stays short. A name too
+         * long to encode in the head is served in place, as before. */
+        size_t plen = strlen(req->path);
+        if (req->path[plen - 1] != '/') {
+            const char *seg = strrchr(req->path, '/') + 1;
+            char enc[600], loc[640];
+            if (http_url_encode(seg, enc, sizeof enc) >= 0 &&
+                snprintf(loc, sizeof loc, "Location: %s/\r\n", enc) < (int)sizeof loc) {
+                close(fd);
+                build_error(c, 301, req->keep_alive, head, loc);
+                return;
+            }
+        }
         int idx = open_beneath(fd, "index.html");
         close(fd);
         if (idx < 0) { build_error(c, status_for_errno(errno), req->keep_alive, head, NULL); return; }

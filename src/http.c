@@ -66,6 +66,26 @@ int http_url_decode(const char *src, size_t n, char *dst, size_t dstsz) {
     return (int)j;
 }
 
+int http_url_encode(const char *src, char *dst, size_t dstsz) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t j = 0;
+    for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
+        int plain = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+                    strchr("-._~!$&'()*+,;=@/", *p) != NULL;
+        if (j + (plain ? 1 : 3) >= dstsz) return -1;
+        if (plain) {
+            dst[j++] = (char)*p;
+        } else {
+            dst[j++] = '%';
+            dst[j++] = hex[*p >> 4];
+            dst[j++] = hex[*p & 15];
+        }
+    }
+    if (j >= dstsz) return -1;
+    dst[j] = '\0';
+    return (int)j;
+}
+
 int http_path_is_safe(const char *path) {
     if (path[0] != '/') return 0;
     const char *p = path;
@@ -373,6 +393,7 @@ const char *http_status_text(int status) {
     switch (status) {
     case 200: return "OK";
     case 206: return "Partial Content";
+    case 301: return "Moved Permanently";
     case 304: return "Not Modified";
     case 400: return "Bad Request";
     case 403: return "Forbidden";

@@ -169,7 +169,13 @@ class ServerTest(unittest.TestCase):
         c.request("GET", "/docs/")
         r = c.getresponse()
         self.assertEqual((r.status, r.read()), (200, b"<h1>docs</h1>"))
-        c.request("GET", "/docs")
+        # Without the slash the page's relative links would resolve against "/", so redirect.
+        for path in ["/docs", "/docs?page=2"]:
+            c.request("GET", path)
+            r = c.getresponse()
+            r.read()
+            self.assertEqual((r.status, r.getheader("Location")), (301, "docs/"), path)
+        c.request("GET", "/docs/")  # the same keep alive connection carries on
         r = c.getresponse()
         self.assertEqual((r.status, r.read()), (200, b"<h1>docs</h1>"))
         c.request("GET", "/space%20name.txt?cache=1")
