@@ -58,6 +58,12 @@ static void test_target(void) {
     http_request r;
     CHECK(parse("GET /a%20b.txt?x=1#f HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK);
     CHECK(strcmp(r.path, "/a b.txt") == 0);
+    CHECK(strcmp(r.query, "x=1") == 0); /* raw, without the '?' or the fragment */
+    CHECK(parse("GET /d?a=%20&b=/c HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && strcmp(r.query, "a=%20&b=/c") == 0);
+    CHECK(parse("GET /d#x?y HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && r.query[0] == '\0');
+    CHECK(parse("GET /d? HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && r.query[0] == '\0');
+    CHECK(parse("GET /d HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && r.query[0] == '\0');
+    CHECK(parse("GET http://x?k=v HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && strcmp(r.query, "k=v") == 0);
     CHECK(parse("GET /a%00b HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a%zz HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a% HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);

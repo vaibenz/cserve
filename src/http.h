@@ -30,6 +30,7 @@ typedef enum {
 typedef struct {
     http_method method;
     char path[MAX_PATH_LEN]; /* percent decoded, query string removed */
+    char query[MAX_PATH_LEN]; /* the raw query after '?', not decoded; empty when absent */
     int version_minor;       /* 0 or 1 */
     int keep_alive;          /* should the connection stay open afterwards */
     long long content_length;

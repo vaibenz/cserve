@@ -175,6 +175,13 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     } else if (http_url_decode(target, path_len, req->path, sizeof req->path) < 0) {
         return PARSE_ERROR;
     }
+    /* Kept as sent (every byte is visible ASCII, checked above) so a redirect can carry it on. */
+    if (path_len < target_len && target[path_len] == '?') {
+        size_t q = path_len + 1, qe = q;
+        while (qe < target_len && target[qe] != '#') qe++;
+        memcpy(req->query, target + q, qe - q);
+        req->query[qe - q] = '\0';
+    }
 
     const char *ver = sp2 + 1;
     size_t ver_len = (size_t)(line_end - ver);

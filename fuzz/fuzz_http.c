@@ -37,7 +37,7 @@
     } while (0)
 
 static int same_request(const http_request *a, const http_request *b) {
-    return a->method == b->method && strcmp(a->path, b->path) == 0 && a->version_minor == b->version_minor &&
+    return a->method == b->method && strcmp(a->path, b->path) == 0 && strcmp(a->query, b->query) == 0 && a->version_minor == b->version_minor &&
            a->keep_alive == b->keep_alive && a->content_length == b->content_length &&
            a->header_len == b->header_len && strcmp(a->range, b->range) == 0 &&
            strcmp(a->if_none_match, b->if_none_match) == 0 &&

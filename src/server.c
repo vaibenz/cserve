@@ -281,14 +281,18 @@ static void build_response(conn *c, const http_request *req) {
     if (S_ISDIR(st.st_mode)) { /* serve the directory's index.html, never a listing */
         /* "/docs" must become "/docs/" first, or the page's relative links ("style.css") would
          * resolve against "/" instead of "/docs/". The Location is relative (RFC 9110 section
-         * 10.2.2 allows it), just the last segment plus a slash, so it stays short. A name too
-         * long to encode in the head is served in place, as before. */
+         * 10.2.2 allows it), just the last segment plus a slash, so it stays short. The query
+         * goes along, or "/search?q=x" would land on "/search/" having lost the search; if it
+         * does not fit it is dropped. A name too long to encode is served in place, as before. */
         size_t plen = strlen(req->path);
         if (req->path[plen - 1] != '/') {
             const char *seg = strrchr(req->path, '/') + 1;
             char enc[600], loc[640];
-            if (http_url_encode(seg, enc, sizeof enc) >= 0 &&
-                snprintf(loc, sizeof loc, "Location: %s/\r\n", enc) < (int)sizeof loc) {
+            int fits = http_url_encode(seg, enc, sizeof enc) >= 0;
+            if (fits && (!req->query[0] || snprintf(loc, sizeof loc, "Location: %s/?%s\r\n", enc, req->query) >=
+                                               (int)sizeof loc))
+                fits = snprintf(loc, sizeof loc, "Location: %s/\r\n", enc) < (int)sizeof loc;
+            if (fits) {
                 close(fd);
                 build_error(c, 301, req->keep_alive, head, loc);
                 return;
