@@ -182,6 +182,16 @@ class ServerTest(unittest.TestCase):
         r = c.getresponse()
         self.assertEqual((r.status, r.read()), (200, b"spaced"))
 
+    def test_absolute_form_target(self):
+        # RFC 9112 section 3.2.2: a server must accept "GET http://host/path", not answer 400.
+        conn = self.raw()
+        conn.send(b"GET http://localhost/hello.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        self.assertEqual(conn.response()[::2], (200, b"hello world\n"))
+        conn.send(b"GET http://localhost/../secret.txt HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        status, _, body = conn.response()
+        self.assertEqual(status, 403)
+        self.assertNotIn(b"SECRET", body)
+
     def test_not_found(self):
         c = self.client()
         c.request("GET", "/nope.txt")

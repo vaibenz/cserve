@@ -145,14 +145,36 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     if (!sp2 || sp2 == target) return PARSE_ERROR;
     size_t target_len = (size_t)(sp2 - target);
     if (target_len >= MAX_PATH_LEN) return PARSE_URI_TOO_LONG;
-    if (target[0] != '/') return PARSE_ERROR; /* origin form only */
-    size_t path_len = target_len;
     for (size_t i = 0; i < target_len; i++) {
         unsigned char c = (unsigned char)target[i];
         if (c <= 0x20 || c == 0x7f) return PARSE_ERROR;
-        if ((c == '?' || c == '#') && path_len == target_len) path_len = i;
     }
-    if (http_url_decode(target, path_len, req->path, sizeof req->path) < 0) return PARSE_ERROR;
+    /* RFC 9112 section 3.2.2: a server MUST accept the absolute form ("http://host/path"),
+     * even though clients only send it to proxies. The scheme and authority are dropped and the
+     * rest is served like an origin form target; an empty path means "/". */
+    int empty_path = 0;
+    size_t skip = 0;
+    if (target_len > 7 && strncasecmp(target, "http://", 7) == 0) skip = 7;
+    else if (target_len > 8 && strncasecmp(target, "https://", 8) == 0) skip = 8;
+    if (skip) {
+        size_t a = skip;
+        while (a < target_len && target[a] != '/' && target[a] != '?' && target[a] != '#') a++;
+        if (a == skip) return PARSE_ERROR; /* no authority: "http:///x" */
+        target += a;
+        target_len -= a;
+        empty_path = target_len == 0 || target[0] != '/';
+    } else if (target[0] != '/') {
+        return PARSE_ERROR; /* neither origin nor absolute form */
+    }
+    size_t path_len = target_len;
+    for (size_t i = 0; i < target_len; i++)
+        if ((target[i] == '?' || target[i] == '#') && path_len == target_len) path_len = i;
+    if (empty_path) {
+        req->path[0] = '/';
+        req->path[1] = '\0';
+    } else if (http_url_decode(target, path_len, req->path, sizeof req->path) < 0) {
+        return PARSE_ERROR;
+    }
 
     const char *ver = sp2 + 1;
     size_t ver_len = (size_t)(line_end - ver);

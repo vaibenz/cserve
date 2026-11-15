@@ -61,8 +61,25 @@ static void test_target(void) {
     CHECK(parse("GET /a%00b HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a%zz HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a% HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
-    CHECK(parse("GET http://x/ HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a\x01 HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+}
+
+/* RFC 9112 section 3.2.2: the absolute form must be accepted and mean the same path. */
+static void test_absolute_form(void) {
+    http_request r;
+    CHECK(parse("GET http://x/a%20b.txt?q=1 HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK);
+    CHECK(strcmp(r.path, "/a b.txt") == 0);
+    CHECK(parse("GET HTTPS://x:8443/docs/ HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK);
+    CHECK(strcmp(r.path, "/docs/") == 0);
+    CHECK(parse("GET http://x HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK && strcmp(r.path, "/") == 0);
+    CHECK(parse("GET http://x?a=/b HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK && strcmp(r.path, "/") == 0);
+    CHECK(parse("GET http://x/../etc/passwd HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK &&
+          strcmp(r.path, "/../etc/passwd") == 0); /* still refused later by http_path_is_safe */
+    CHECK(parse("GET http:///a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR); /* no authority */
+    CHECK(parse("GET http:// HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET ftp://x/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR); /* other schemes */
+    CHECK(parse("GET x/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET http://x/%zz HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
 }
 
 static void test_versions_and_headers(void) {
@@ -228,6 +245,7 @@ int main(void) {
     test_methods();
     test_keep_alive_rules();
     test_target();
+    test_absolute_form();
     test_versions_and_headers();
     test_limits();
     test_pipelining();
