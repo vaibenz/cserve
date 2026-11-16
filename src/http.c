@@ -110,7 +110,7 @@ static void copy_value(char *dst, size_t dstsz, const char *v, size_t n, unsigne
         return;
     }
     *seen |= bit;
-    if (n == 0 || n >= dstsz || memchr(v, '\0', n)) return;
+    if (n == 0 || n >= dstsz) return;
     memcpy(dst, v, n);
     dst[n] = '\0';
 }
@@ -200,6 +200,9 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     while (p < limit) {
         ll = line_length(p, limit);
         if (ll <= 0) return PARSE_ERROR;
+        /* RFC 9110 section 5.5: a NUL in a field value MUST be rejected (or replaced). Parsers that
+         * stop at the NUL and parsers that do not would read different headers out of one line. */
+        if (memchr(p, '\0', (size_t)ll)) return PARSE_ERROR;
         const char *colon = memchr(p, ':', (size_t)ll);
         if (!colon || colon == p) return PARSE_ERROR;
         for (const char *q = p; q < colon; q++)

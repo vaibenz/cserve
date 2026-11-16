@@ -105,6 +105,19 @@ static void test_versions_and_headers(void) {
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n", &r) == PARSE_ERROR);
 }
 
+/* A NUL inside a header line must make the request a 400, not be skipped over (RFC 9110 5.5). */
+static void test_nul_in_headers(void) {
+    http_request r;
+    static const char a[] = "GET / HTTP/1.1\r\nHost: a\r\nX-Foo: b\0c\r\n\r\n";
+    CHECK(http_parse_request(a, sizeof a - 1, &r) == PARSE_ERROR);
+    static const char b[] = "GET / HTTP/1.1\r\nHost: a\0b\r\n\r\n";
+    CHECK(http_parse_request(b, sizeof b - 1, &r) == PARSE_ERROR);
+    static const char c[] = "GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=0-1\0\r\n\r\n";
+    CHECK(http_parse_request(c, sizeof c - 1, &r) == PARSE_ERROR);
+    static const char d[] = "GET / HTTP/1.1\r\nHost: a\r\nX\0Y: z\r\n\r\n";
+    CHECK(http_parse_request(d, sizeof d - 1, &r) == PARSE_ERROR);
+}
+
 static void test_limits(void) {
     http_request r;
     static char big[MAX_HEADERS_SIZE + 64];
@@ -253,6 +266,7 @@ int main(void) {
     test_target();
     test_absolute_form();
     test_versions_and_headers();
+    test_nul_in_headers();
     test_limits();
     test_pipelining();
     test_leading_empty_lines();
