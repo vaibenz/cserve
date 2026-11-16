@@ -105,6 +105,20 @@ static void test_versions_and_headers(void) {
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n", &r) == PARSE_ERROR);
 }
 
+/* A Host value that is not host[:port] is a 400 (RFC 9112 3.2); an empty one is allowed. */
+static void test_host_value(void) {
+    http_request r;
+    CHECK(parse("GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost:\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a b\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a/b\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: user@a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\"b\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.0\r\nHost: a,b c\r\n\r\n", &r) == PARSE_ERROR);
+}
+
 /* A NUL inside a header line must make the request a 400, not be skipped over (RFC 9110 5.5). */
 static void test_nul_in_headers(void) {
     http_request r;
@@ -267,6 +281,7 @@ int main(void) {
     test_absolute_form();
     test_versions_and_headers();
     test_nul_in_headers();
+    test_host_value();
     test_limits();
     test_pipelining();
     test_leading_empty_lines();

@@ -45,6 +45,12 @@ static int is_tchar(char c) {
     return c != '\0' && strchr("!#$%&'*+-.^_`|~", c) != NULL;
 }
 
+/* Characters of uri-host [ ":" port ] (RFC 3986): reg-name, IPv4 and bracketed IPv6. */
+static int is_host_char(char c) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return 1;
+    return c != '\0' && strchr("-._~!$&'()*+,;=%:[]", c) != NULL;
+}
+
 /* ---------- public API ---------- */
 
 int http_url_decode(const char *src, size_t n, char *dst, size_t dstsz) {
@@ -215,6 +221,9 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
 
         if (ieq(p, name_len, "Host")) {
             if (saw_host++) return PARSE_ERROR;
+            /* RFC 9112 section 3.2: a Host with an invalid value MUST get a 400, like a missing one. */
+            for (size_t i = 0; i < v_len; i++)
+                if (!is_host_char(v[i])) return PARSE_ERROR;
         } else if (ieq(p, name_len, "Content-Length")) {
             if (v_len == 0 || v_len > 18) return PARSE_ERROR;
             long long cl = 0;
