@@ -132,6 +132,19 @@ static void test_nul_in_headers(void) {
     CHECK(http_parse_request(d, sizeof d - 1, &r) == PARSE_ERROR);
 }
 
+static void test_control_chars_in_headers(void) {
+    http_request r;
+    /* Every other control character in a value is refused too, wherever it sits: DEL included. */
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nX-Foo: b\x1b[31mc\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=0-1\x0b\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nX-Foo: \x01\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nX-Foo: b\x7f\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\x0c\r\n\r\n", &r) == PARSE_ERROR);
+    /* HTAB is whitespace, and bytes from 0x80 up (obs-text, UTF-8) are still allowed. */
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nX-Foo:\tb\tc\t\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nX-Name: J\xc3\xbcrgen\r\n\r\n", &r) == PARSE_OK);
+}
+
 static void test_limits(void) {
     http_request r;
     static char big[MAX_HEADERS_SIZE + 64];
@@ -285,6 +298,7 @@ int main(void) {
     test_absolute_form();
     test_versions_and_headers();
     test_nul_in_headers();
+    test_control_chars_in_headers();
     test_host_value();
     test_limits();
     test_pipelining();

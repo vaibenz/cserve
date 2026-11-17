@@ -211,6 +211,13 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
         if (memchr(p, '\0', (size_t)ll)) return PARSE_ERROR;
         const char *colon = memchr(p, ':', (size_t)ll);
         if (!colon || colon == p) return PARSE_ERROR;
+        /* The other control characters (all but HTAB, and DEL) are not valid in a field value either.
+         * Some proxies refuse them and some pass them on, which is the kind of disagreement smuggling
+         * needs, and a value holding an escape sequence is a terminal injection in anything that logs it. */
+        for (const char *q = colon + 1; q < p + ll; q++) {
+            unsigned char c = (unsigned char)*q;
+            if ((c < 0x20 && c != '\t') || c == 0x7f) return PARSE_ERROR;
+        }
         for (const char *q = p; q < colon; q++)
             if (!is_tchar(*q)) return PARSE_ERROR; /* also rejects "Name : value" */
 
