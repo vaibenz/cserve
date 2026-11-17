@@ -391,11 +391,19 @@ long long http_parse_date(const char *v) {
 int http_etag_matches(const char *list, const char *etag) {
     const char *e = etag[0] == 'W' && etag[1] == '/' ? etag + 2 : etag; /* weak comparison */
     size_t elen = strlen(e);
+    /* "*" is the whole value or nothing (RFC 9110 section 13.1.2): "*, \"x\"" or "*abc" is malformed,
+     * and a malformed list must not turn into a 304 for a client that may hold no copy at all. */
+    const char *s = list;
+    while (is_ows(*s)) s++;
+    if (*s == '*') {
+        s++;
+        while (is_ows(*s)) s++;
+        return *s == '\0';
+    }
     const char *p = list;
     for (;;) {
         while (is_ows(*p) || *p == ',') p++;
         if (*p == '\0') return 0;
-        if (*p == '*') return 1;
         if (p[0] == 'W' && p[1] == '/') p += 2;
         if (*p != '"') return 0; /* malformed list: no match, so the full response is sent */
         const char *q = strchr(p + 1, '"');

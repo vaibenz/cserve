@@ -403,6 +403,11 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(r.status, 304)  # weak comparison, any entry in the list
         r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale"'})
         self.assertEqual(r.status, 200)
+        r, _ = self.fetch("/hello.txt", **{"If-None-Match": "*"})
+        self.assertEqual(r.status, 304)
+        for bad in ('"stale", *', "*junk"):  # "*" mixed into a list is malformed: no 304
+            r, body = self.fetch("/hello.txt", **{"If-None-Match": bad})
+            self.assertEqual((r.status, body), (200, b"hello world\n"), bad)
 
     def test_if_modified_since(self):
         r, _ = self.fetch("/hello.txt")

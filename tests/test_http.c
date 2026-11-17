@@ -262,6 +262,10 @@ static void test_conditional_helpers(void) {
     CHECK(http_etag_matches("\"abc\"", "\"abc\""));
     CHECK(http_etag_matches("\"x\", W/\"abc\"", "\"abc\""));
     CHECK(http_etag_matches("*", "\"abc\""));
+    CHECK(http_etag_matches(" * ", "\"abc\""));
+    CHECK(!http_etag_matches("*abc", "\"abc\"")); /* "*" only counts as the whole value */
+    CHECK(!http_etag_matches("*, \"x\"", "\"abc\""));
+    CHECK(!http_etag_matches("\"x\", *", "\"abc\""));
     CHECK(!http_etag_matches("\"abcd\"", "\"abc\""));
     CHECK(!http_etag_matches("abc", "\"abc\""));
     CHECK(!http_etag_matches("\"ab", "\"abc\""));
