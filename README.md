@@ -67,7 +67,7 @@ Every worker thread owns its listening socket, its epoll instance and its connec
 
 **Why `openat2(RESOLVE_BENEATH)`?** Checking for `..` in a string is not enough, because a symlink inside the document root can point anywhere. `RESOLVE_BENEATH` makes the kernel reject any path resolution that leaves the root, atomically and without a race between checking and opening. On kernels older than 5.6 the server falls back to verifying the opened descriptor's real path.
 
-**Why is a range or condition sometimes ignored?** RFC 9110 lets a server answer any `Range` with a full `200`, so a multi range request, another unit, a malformed value or two `Range` headers all get the whole file rather than an error. Ignoring is always safe; guessing is not. The same goes for a date in an obsolete format in `If-Modified-Since`. `ETag`s are strong and built from the inode, size and nanosecond modification time, so rewriting a file with the same size within the same second still changes its tag.
+**Why is a range or condition sometimes ignored?** RFC 9110 lets a server answer any `Range` with a full `200`, so a multi range request, another unit, a malformed value or two `Range` headers all get the whole file rather than an error. Ignoring is always safe; guessing is not. The same goes for a date in an obsolete format in `If-Modified-Since`, or one later than the server's clock. `ETag`s are strong and built from the inode, size and nanosecond modification time, so rewriting a file with the same size within the same second still changes its tag.
 
 ## Defending against hostile clients
 

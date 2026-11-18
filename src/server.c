@@ -324,8 +324,11 @@ static void build_response(conn *c, const http_request *req) {
     if (req->if_none_match[0]) {
         not_modified = http_etag_matches(req->if_none_match, etag);
     } else if (req->if_modified_since[0]) {
+        /* A date later than the server's clock is invalid (RFC 7232 section 3.3) and ignored, as
+         * Apache does: otherwise "If-Modified-Since: <next year>" would keep getting 304s for a file
+         * that changes before then, and a cache holding that date would never see the new version. */
         long long since = http_parse_date(req->if_modified_since);
-        not_modified = since >= 0 && (long long)st.st_mtim.tv_sec <= since;
+        not_modified = since >= 0 && since <= (long long)time(NULL) && (long long)st.st_mtim.tv_sec <= since;
     }
     if (not_modified) {
         close(fd);

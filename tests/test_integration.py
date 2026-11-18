@@ -416,6 +416,9 @@ class ServerTest(unittest.TestCase):
         earlier = email.utils.formatdate(email.utils.parsedate_to_datetime(lm).timestamp() - 1, usegmt=True)
         self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": earlier})[0].status, 200)
         self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": "yesterday"})[0].status, 200)
+        # A date in the future is invalid and ignored, so the file is sent, not a 304.
+        future = email.utils.formatdate(time.time() + 365 * 86400, usegmt=True)
+        self.assertEqual(self.fetch("/hello.txt", **{"If-Modified-Since": future})[0].status, 200)
         # If-None-Match takes precedence: a stale ETag means 200 even with a current date.
         r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale"', "If-Modified-Since": lm})
         self.assertEqual(r.status, 200)
