@@ -117,6 +117,20 @@ static void test_host_value(void) {
     CHECK(parse("GET / HTTP/1.1\r\nHost: user@a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\"b\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET / HTTP/1.0\r\nHost: a,b c\r\n\r\n", &r) == PARSE_ERROR);
+    /* The right characters in the wrong places: the port is digits only, there is at most one,
+     * and brackets only wrap an IPv6 address at the very start. */
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a:\r\n\r\n", &r) == PARSE_OK); /* empty port is allowed */
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [2001:db8::7]\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [::ffff:10.0.0.1]:80\r\n\r\n", &r) == PARSE_OK);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a:8o\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a:80:81\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: ::1\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [::1\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: []\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [::1]x\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: [a.com]\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a]b\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a:[80]\r\n\r\n", &r) == PARSE_ERROR);
 }
 
 /* A NUL inside a header line must make the request a 400, not be skipped over (RFC 9110 5.5). */

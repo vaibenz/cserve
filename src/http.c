@@ -45,10 +45,35 @@ static int is_tchar(char c) {
     return c != '\0' && strchr("!#$%&'*+-.^_`|~", c) != NULL;
 }
 
-/* Characters of uri-host [ ":" port ] (RFC 3986): reg-name, IPv4 and bracketed IPv6. */
-static int is_host_char(char c) {
+/* Characters of a reg-name or IPv4 address (RFC 3986 section 3.2.2). */
+static int is_reg_name_char(char c) {
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return 1;
-    return c != '\0' && strchr("-._~!$&'()*+,;=%:[]", c) != NULL;
+    return c != '\0' && strchr("-._~!$&'()*+,;=%", c) != NULL;
+}
+
+/* uri-host [ ":" port ] (RFC 3986): a reg-name or IPv4 address, or an IPv6 address in brackets,
+ * then an optional colon and a port of digits. The value may be empty. */
+static int is_host_value(const char *v, size_t n) {
+    size_t i = 0;
+    if (n > 0 && v[0] == '[') {
+        int colons = 0;
+        for (i = 1; i < n && v[i] != ']'; i++) {
+            if (v[i] == ':') colons++;
+            else if (v[i] != '.' && hexval(v[i]) < 0) return 0;
+        }
+        if (i == n || colons == 0) return 0; /* unclosed, or not an IPv6 address */
+        i++;
+    } else {
+        while (i < n && v[i] != ':') {
+            if (!is_reg_name_char(v[i])) return 0;
+            i++;
+        }
+    }
+    if (i == n) return 1;
+    if (v[i++] != ':') return 0;
+    for (; i < n; i++)
+        if (v[i] < '0' || v[i] > '9') return 0;
+    return 1;
 }
 
 /* ---------- public API ---------- */
@@ -229,8 +254,7 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
         if (ieq(p, name_len, "Host")) {
             if (saw_host++) return PARSE_ERROR;
             /* RFC 9112 section 3.2: a Host with an invalid value MUST get a 400, like a missing one. */
-            for (size_t i = 0; i < v_len; i++)
-                if (!is_host_char(v[i])) return PARSE_ERROR;
+            if (!is_host_value(v, v_len)) return PARSE_ERROR;
         } else if (ieq(p, name_len, "Content-Length")) {
             if (v_len == 0 || v_len > 18) return PARSE_ERROR;
             long long cl = 0;
