@@ -307,6 +307,12 @@ static void test_conditional_helpers(void) {
     CHECK(!http_etag_matches("\"abcd\"", "\"abc\""));
     CHECK(!http_etag_matches("abc", "\"abc\""));
     CHECK(!http_etag_matches("\"ab", "\"abc\""));
+    /* A malformed list never matches, even when the tag appears in it. */
+    CHECK(!http_etag_matches("\"abc\"junk", "\"abc\""));
+    CHECK(!http_etag_matches("\"x\"\"abc\"", "\"abc\""));   /* no comma between tags */
+    CHECK(!http_etag_matches("\"abc\" \"x\"", "\"abc\""));
+    CHECK(!http_etag_matches("\"abc\", \"x", "\"abc\""));    /* unterminated later tag */
+    CHECK(http_etag_matches(" \"x\" , \"abc\" ,", "\"abc\"")); /* OWS and empty elements are fine */
     http_request r;
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=1-2\r\nIf-None-Match: \"e\"\r\n\r\n", &r) == PARSE_OK);
     CHECK(strcmp(r.range, "bytes=1-2") == 0 && strcmp(r.if_none_match, "\"e\"") == 0 && r.if_range[0] == 0);

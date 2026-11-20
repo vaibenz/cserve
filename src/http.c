@@ -437,16 +437,21 @@ int http_etag_matches(const char *list, const char *etag) {
         while (is_ows(*s)) s++;
         return *s == '\0';
     }
+    /* The whole list is checked before a match counts: "\"abc\"junk" or two tags with no comma
+     * between them are malformed wherever the match sits. */
     const char *p = list;
+    int matched = 0;
     for (;;) {
         while (is_ows(*p) || *p == ',') p++;
-        if (*p == '\0') return 0;
+        if (*p == '\0') return matched;
         if (p[0] == 'W' && p[1] == '/') p += 2;
         if (*p != '"') return 0; /* malformed list: no match, so the full response is sent */
         const char *q = strchr(p + 1, '"');
         if (!q) return 0;
-        if ((size_t)(q + 1 - p) == elen && memcmp(p, e, elen) == 0) return 1;
+        if ((size_t)(q + 1 - p) == elen && memcmp(p, e, elen) == 0) matched = 1;
         p = q + 1;
+        while (is_ows(*p)) p++;
+        if (*p != ',' && *p != '\0') return 0; /* a tag must be followed by a comma or the end */
     }
 }
 
