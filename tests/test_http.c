@@ -68,6 +68,11 @@ static void test_target(void) {
     CHECK(parse("GET /a%zz HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a% HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /a\x01 HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    /* Raw bytes from 0x80 up are not URI characters; the percent encoded form is the one to send. */
+    CHECK(parse("GET /caf\xc3\xa9 HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET /d?q=\xff HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET /caf%C3%A9?q=%FF HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK &&
+          strcmp(r.path, "/caf\xc3\xa9") == 0 && strcmp(r.query, "q=%FF") == 0);
 }
 
 /* RFC 9112 section 3.2.2: the absolute form must be accepted and mean the same path. */

@@ -176,9 +176,12 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     if (!sp2 || sp2 == target) return PARSE_ERROR;
     size_t target_len = (size_t)(sp2 - target);
     if (target_len >= MAX_PATH_LEN) return PARSE_URI_TOO_LONG;
+    /* A request target is a URI, which is ASCII only (RFC 3986): a client percent encodes anything
+     * else. Raw bytes from 0x80 up are refused too, so the query, which is kept as sent and echoed
+     * into a redirect's Location, can only ever hold visible ASCII. */
     for (size_t i = 0; i < target_len; i++) {
         unsigned char c = (unsigned char)target[i];
-        if (c <= 0x20 || c == 0x7f) return PARSE_ERROR;
+        if (c <= 0x20 || c >= 0x7f) return PARSE_ERROR;
     }
     /* RFC 9112 section 3.2.2: a server MUST accept the absolute form ("http://host/path"),
      * even though clients only send it to proxies. The scheme and authority are dropped and the
