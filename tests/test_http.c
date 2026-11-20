@@ -91,6 +91,12 @@ static void test_absolute_form(void) {
     CHECK(parse("GET ftp://x/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR); /* other schemes */
     CHECK(parse("GET x/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET http://x/%zz HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
+    /* The authority must be host[:port], like a Host header. */
+    CHECK(parse("GET http://[::1]:80/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_OK && strcmp(r.path, "/a") == 0);
+    CHECK(parse("GET http://user:pw@x/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR); /* userinfo */
+    CHECK(parse("GET http://x:8o/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);      /* bad port */
+    CHECK(parse("GET http://x\"y/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("GET http://[::1/a HTTP/1.1\r\nHost: x\r\n\r\n", &r) == PARSE_ERROR);      /* unclosed */
 }
 
 static void test_versions_and_headers(void) {

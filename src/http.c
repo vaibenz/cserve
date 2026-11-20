@@ -194,6 +194,9 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
         size_t a = skip;
         while (a < target_len && target[a] != '/' && target[a] != '?' && target[a] != '#') a++;
         if (a == skip) return PARSE_ERROR; /* no authority: "http:///x" */
+        /* The authority stands in for Host (RFC 9112 section 3.2.2), so it is held to the same shape:
+         * host[:port]. Userinfo ("http://user@x/") is refused too, as RFC 9110 section 4.2.4 advises. */
+        if (!is_host_value(target + skip, a - skip)) return PARSE_ERROR;
         target += a;
         target_len -= a;
         empty_path = target_len == 0 || target[0] != '/';
