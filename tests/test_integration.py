@@ -803,6 +803,13 @@ class OptionsTest(unittest.TestCase):
             self.assertEqual(r.returncode, 2, args)
             self.assertIn(b"usage", r.stderr, args)
 
+    def test_stray_arguments_are_refused(self):
+        # A root given without -r used to be ignored, and ./www served in its place.
+        for args in (["/srv/site"], ["-p", "8080", "extra"], ["-q", "-t", "2", "www", "-i", "5"]):
+            r = self.run_binary(args + ["-r", "/nonexistent"])
+            self.assertEqual(r.returncode, 2, args)
+            self.assertIn(b"usage", r.stderr, args)
+
     def test_largest_connection_cap_does_not_overflow(self):
         # The per worker share used to be computed as (max + threads - 1) / threads.
         with tempfile.TemporaryDirectory() as root:

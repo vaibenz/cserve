@@ -57,6 +57,14 @@ int main(int argc, char **argv) {
         default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
+    /* getopt stops at, or moves to the end, anything that is not an option. "cserve /srv/site"
+     * would otherwise ignore the directory and quietly serve ./www instead. */
+    if (optind < argc) {
+        fprintf(stderr, "%s: unexpected argument '%s' (the directory to serve is given with -r)\n", argv[0],
+                argv[optind]);
+        usage(argv[0]);
+        return 2;
+    }
     if (cfg.port <= 0 || cfg.port > 65535 || cfg.threads <= 0 || cfg.threads > 1024 ||
         cfg.idle_timeout_sec <= 0 || cfg.header_timeout_sec <= 0 || cfg.max_conns <= 0 ||
         !cfg.tls_cert != !cfg.tls_key) {
