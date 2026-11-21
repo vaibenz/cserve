@@ -342,13 +342,19 @@ static void build_response(conn *c, const http_request *req) {
     }
 
     /* Range (RFC 9110 section 14), one range per request. If-Range makes it conditional on the
-     * client still holding this exact version: a strong ETag match, or the exact Last-Modified. */
+     * client still holding this exact version: a strong ETag match, or the exact Last-Modified.
+     * A date only counts while Last-Modified is a strong validator, which it is not if the file
+     * changed in the second the response is sent (RFC 9110 sections 8.8.2.2 and 13.1.5): two
+     * writes inside one second share a Last-Modified, so the client's part may be from the first
+     * and the range from the second. Then the whole file is sent, which is always safe. */
     int status = 200;
     long long first = 0, last = (long long)st.st_size - 1;
     if (req->range[0]) {
         int use = 1;
-        if (req->if_range[0])
-            use = req->if_range[0] == '"' ? strcmp(req->if_range, etag) == 0 : strcmp(req->if_range, lastmod) == 0;
+        if (req->if_range[0] == '"')
+            use = strcmp(req->if_range, etag) == 0;
+        else if (req->if_range[0])
+            use = strcmp(req->if_range, lastmod) == 0 && (long long)st.st_mtim.tv_sec < (long long)time(NULL);
         int r = use ? http_parse_range(req->range, (long long)st.st_size, &first, &last) : 0;
         if (r < 0) {
             close(fd);

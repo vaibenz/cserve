@@ -424,12 +424,32 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(r.status, 200)
 
     def test_if_range(self):
-        r, _ = self.fetch("/hello.txt")
+        path = os.path.join(self.root, "settled.txt")
+        with open(path, "w") as f:
+            f.write("hello world\n")
+        os.utime(path, (time.time() - 60, time.time() - 60))
+        r, _ = self.fetch("/settled.txt")
         etag, lm = r.getheader("ETag"), r.getheader("Last-Modified")
-        self.assertEqual(self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": etag})[0].status, 206)
-        self.assertEqual(self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": lm})[0].status, 206)
-        r, body = self.fetch("/hello.txt", Range="bytes=0-4", **{"If-Range": '"old"'})
+        self.assertEqual(self.fetch("/settled.txt", Range="bytes=0-4", **{"If-Range": etag})[0].status, 206)
+        self.assertEqual(self.fetch("/settled.txt", Range="bytes=0-4", **{"If-Range": lm})[0].status, 206)
+        r, body = self.fetch("/settled.txt", Range="bytes=0-4", **{"If-Range": '"old"'})
         self.assertEqual((r.status, body), (200, b"hello world\n"))  # changed since: whole file
+        r, body = self.fetch("/settled.txt", Range="bytes=0-4", **{"If-Range": "W/" + etag})
+        self.assertEqual((r.status, body), (200, b"hello world\n"))  # a weak tag never matches
+
+    def test_if_range_date_needs_a_strong_last_modified(self):
+        # A file modified in the current second has a weak Last-Modified: a second write in the
+        # same second would keep the date, so If-Range with that date must send the whole file.
+        # The mtime is set ahead of the clock so the test does not depend on when the second ticks.
+        path = os.path.join(self.root, "fresh.txt")
+        with open(path, "w") as f:
+            f.write("hello world\n")
+        os.utime(path, (time.time() + 30, time.time() + 30))
+        r, _ = self.fetch("/fresh.txt")
+        etag, lm = r.getheader("ETag"), r.getheader("Last-Modified")
+        r, body = self.fetch("/fresh.txt", Range="bytes=0-4", **{"If-Range": lm})
+        self.assertEqual((r.status, body), (200, b"hello world\n"))
+        self.assertEqual(self.fetch("/fresh.txt", Range="bytes=0-4", **{"If-Range": etag})[0].status, 206)
 
     def test_etag_changes_when_the_file_does(self):
         path = os.path.join(self.root, "changing.txt")
