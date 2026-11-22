@@ -319,10 +319,12 @@ static void build_response(conn *c, const http_request *req) {
         return;
     }
 
-    /* Conditional GET (RFC 9110 section 13): If-None-Match wins over If-Modified-Since. */
+    /* Conditional GET (RFC 9110 section 13): If-None-Match wins over If-Modified-Since, even when
+     * the parser dropped it (empty, too long, or sent twice). Then nothing can match and the file is
+     * sent: falling back to the date would answer 304 to a client whose tags all name other versions. */
     int not_modified = 0;
-    if (req->if_none_match[0]) {
-        not_modified = http_etag_matches(req->if_none_match, etag);
+    if (req->has_if_none_match) {
+        not_modified = req->if_none_match[0] && http_etag_matches(req->if_none_match, etag);
     } else if (req->if_modified_since[0]) {
         /* A date later than the server's clock is invalid (RFC 7232 section 3.3) and ignored, as
          * Apache does: otherwise "If-Modified-Since: <next year>" would keep getting 304s for a file

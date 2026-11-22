@@ -274,6 +274,7 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
             copy_value(req->range, sizeof req->range, v, v_len, &seen, 1);
         } else if (ieq(p, name_len, "If-None-Match")) {
             copy_value(req->if_none_match, sizeof req->if_none_match, v, v_len, &seen, 2);
+            req->has_if_none_match = 1;
         } else if (ieq(p, name_len, "If-Modified-Since")) {
             copy_value(req->if_modified_since, sizeof req->if_modified_since, v, v_len, &seen, 4);
         } else if (ieq(p, name_len, "If-Range")) {

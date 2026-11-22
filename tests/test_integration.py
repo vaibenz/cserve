@@ -422,6 +422,12 @@ class ServerTest(unittest.TestCase):
         # If-None-Match takes precedence: a stale ETag means 200 even with a current date.
         r, _ = self.fetch("/hello.txt", **{"If-None-Match": '"stale"', "If-Modified-Since": lm})
         self.assertEqual(r.status, 200)
+        # Even an If-None-Match the parser drops (sent twice, empty, or too long) still overrides the
+        # date: the client named versions, and falling back to the date would 304 a stale copy.
+        for inm in ['If-None-Match: "a"\r\nIf-None-Match: "b"', "If-None-Match:", 'If-None-Match: "' + "x" * 600 + '"']:
+            c = self.raw()
+            c.send(f"GET /hello.txt HTTP/1.1\r\nHost: a\r\n{inm}\r\nIf-Modified-Since: {lm}\r\n\r\n".encode())
+            self.assertEqual(c.response()[0], 200, inm[:40])
 
     def test_if_range(self):
         path = os.path.join(self.root, "settled.txt")

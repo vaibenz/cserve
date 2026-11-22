@@ -43,6 +43,8 @@ typedef struct {
     /* 1 if an If-Range header was sent at all, even one dropped above (empty, too long or repeated).
      * A Range under a condition that cannot be checked must not be served unconditionally. */
     int has_if_range;
+    /* The same for If-None-Match: once sent, If-Modified-Since is ignored (RFC 9110 section 13.1.3). */
+    int has_if_none_match;
 } http_request;
 
 parse_result http_parse_request(const char *buf, size_t len, http_request *req);

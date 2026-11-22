@@ -324,6 +324,9 @@ static void test_conditional_helpers(void) {
     CHECK(r.if_range[0] == 0 && r.has_if_range);
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nIf-Range:\r\n\r\n", &r) == PARSE_OK);
     CHECK(r.if_range[0] == 0 && r.has_if_range);
+    CHECK(!r.has_if_none_match);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nIf-None-Match: \"a\"\r\nIf-None-Match: \"b\"\r\n\r\n", &r) == PARSE_OK);
+    CHECK(r.if_none_match[0] == 0 && r.has_if_none_match);
 }
 
 int main(void) {
