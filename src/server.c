@@ -350,8 +350,13 @@ static void build_response(conn *c, const http_request *req) {
     int status = 200;
     long long first = 0, last = (long long)st.st_size - 1;
     if (req->range[0]) {
+        /* An If-Range that was sent but dropped by the parser (empty, too long, or sent twice) is a
+         * condition we cannot check, so the client gets the whole file rather than a range of what may
+         * be a newer version than the part it holds (RFC 9110 section 13.1.5). */
         int use = 1;
-        if (req->if_range[0] == '"')
+        if (req->has_if_range && !req->if_range[0])
+            use = 0;
+        else if (req->if_range[0] == '"')
             use = strcmp(req->if_range, etag) == 0;
         else if (req->if_range[0])
             use = strcmp(req->if_range, lastmod) == 0 && (long long)st.st_mtim.tv_sec < (long long)time(NULL);

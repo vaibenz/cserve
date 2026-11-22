@@ -278,6 +278,7 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
             copy_value(req->if_modified_since, sizeof req->if_modified_since, v, v_len, &seen, 4);
         } else if (ieq(p, name_len, "If-Range")) {
             copy_value(req->if_range, sizeof req->if_range, v, v_len, &seen, 8);
+            req->has_if_range = 1;
         } else if (ieq(p, name_len, "Transfer-Encoding")) {
             return PARSE_ERROR; /* request bodies are not supported by a static server */
         } else if (ieq(p, name_len, "Connection")) {

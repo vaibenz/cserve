@@ -318,6 +318,12 @@ static void test_conditional_helpers(void) {
     CHECK(strcmp(r.range, "bytes=1-2") == 0 && strcmp(r.if_none_match, "\"e\"") == 0 && r.if_range[0] == 0);
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=1-2\r\nRange: bytes=3-4\r\n\r\n", &r) == PARSE_OK);
     CHECK(r.range[0] == 0); /* two Range headers: ambiguous, so neither is used */
+    CHECK(!r.has_if_range);
+    /* An If-Range that is dropped is still known to have been sent, so the range is not served. */
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nIf-Range: \"a\"\r\nIf-Range: \"a\"\r\n\r\n", &r) == PARSE_OK);
+    CHECK(r.if_range[0] == 0 && r.has_if_range);
+    CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nIf-Range:\r\n\r\n", &r) == PARSE_OK);
+    CHECK(r.if_range[0] == 0 && r.has_if_range);
 }
 
 int main(void) {

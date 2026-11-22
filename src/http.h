@@ -40,6 +40,9 @@ typedef struct {
     char if_none_match[MAX_ETAGS_LEN];
     char if_modified_since[MAX_DATE_LEN];
     char if_range[MAX_ETAGS_LEN];
+    /* 1 if an If-Range header was sent at all, even one dropped above (empty, too long or repeated).
+     * A Range under a condition that cannot be checked must not be served unconditionally. */
+    int has_if_range;
 } http_request;
 
 parse_result http_parse_request(const char *buf, size_t len, http_request *req);

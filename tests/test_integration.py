@@ -437,6 +437,21 @@ class ServerTest(unittest.TestCase):
         r, body = self.fetch("/settled.txt", Range="bytes=0-4", **{"If-Range": "W/" + etag})
         self.assertEqual((r.status, body), (200, b"hello world\n"))  # a weak tag never matches
 
+    def test_if_range_that_cannot_be_checked_sends_the_whole_file(self):
+        # An If-Range the parser drops (empty, longer than it keeps, or sent twice) is still a
+        # condition: serving the range anyway could splice bytes of a newer file onto an old part.
+        path = os.path.join(self.root, "settled2.txt")
+        with open(path, "w") as f:
+            f.write("hello world\n")
+        os.utime(path, (time.time() - 60, time.time() - 60))
+        etag = self.fetch("/settled2.txt")[0].getheader("ETag")
+        for cond in ['If-Range: "old"\r\nIf-Range: "old"', f"If-Range: {etag}\r\nIf-Range: {etag}",
+                     "If-Range:", 'If-Range: "' + "x" * 600 + '"']:
+            c = self.raw()
+            c.send(f"GET /settled2.txt HTTP/1.1\r\nHost: a\r\nRange: bytes=0-4\r\n{cond}\r\n\r\n".encode())
+            status, _, body = c.response()
+            self.assertEqual((status, body), (200, b"hello world\n"), cond[:40])
+
     def test_if_range_date_needs_a_strong_last_modified(self):
         # A file modified in the current second has a weak Last-Modified: a second write in the
         # same second would keep the date, so If-Range with that date must send the whole file.
