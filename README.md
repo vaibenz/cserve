@@ -9,7 +9,7 @@ On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small pag
 ## What's in it
 
 **HTTP**
-* HTTP/1.1 keep alive and pipelining, `GET` and `HEAD`, directory `index.html` (with a `301` from `/docs` to `/docs/` so relative links work, keeping any query string), MIME types, and `X-Content-Type-Options: nosniff` on every response so browsers never second guess the `Content-Type`
+* HTTP/1.1 keep alive and pipelining, `GET` and `HEAD` (any other method, `OPTIONS *` included, gets `405` with `Allow`), directory `index.html` (with a `301` from `/docs` to `/docs/` so relative links work, keeping any query string), MIME types, and `X-Content-Type-Options: nosniff` on every response so browsers never second guess the `Content-Type`
 * Range requests (`206`, `416`, `If-Range`) and conditional GET (`ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`, `304`)
 * A strict, allocation free request parser: bare `CR` or `LF`, a `NUL` or any other control character but tab in a header, a raw byte outside ASCII in the request target, a duplicate or malformed `Host` (or authority in an absolute form target), conflicting `Content-Length` and any `Transfer-Encoding` are refused, because request smuggling relies on two parsers disagreeing about where a request ends
 

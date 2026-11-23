@@ -289,6 +289,11 @@ class ServerTest(unittest.TestCase):
         conn.send(b"DELETE /hello.txt HTTP/1.1\r\nHost: x\r\n\r\n")
         status, headers, _ = conn.response()
         self.assertEqual((status, headers["allow"]), (405, "GET, HEAD"))
+        # "OPTIONS *" asks about the server as a whole and is well formed: 405 with Allow, not 400.
+        conn = self.raw()
+        conn.send(b"OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n")
+        status, headers, _ = conn.response()
+        self.assertEqual((status, headers["allow"]), (405, "GET, HEAD"))
 
     def test_header_too_large(self):
         conn = self.raw()

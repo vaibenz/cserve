@@ -73,6 +73,13 @@ static void test_target(void) {
     CHECK(parse("GET /d?q=\xff HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET /caf%C3%A9?q=%FF HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK &&
           strcmp(r.path, "/caf\xc3\xa9") == 0 && strcmp(r.query, "q=%FF") == 0);
+    /* The asterisk form is only for OPTIONS (RFC 9112 section 3.2.4). */
+    CHECK(parse("OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK && r.method == M_OTHER &&
+          strcmp(r.path, "/") == 0 && r.query[0] == '\0');
+    CHECK(parse("GET * HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("HEAD * HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("OPTIONS *x HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
+    CHECK(parse("OPTIONS ** HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
 }
 
 /* RFC 9112 section 3.2.2: the absolute form must be accepted and mean the same path. */

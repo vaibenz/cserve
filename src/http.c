@@ -217,6 +217,13 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
         target += a;
         target_len -= a;
         empty_path = target_len == 0 || target[0] != '/';
+    } else if (target_len == 1 && target[0] == '*') {
+        /* The asterisk form ("OPTIONS * HTTP/1.1", RFC 9112 section 3.2.4) is a well formed request
+         * about the server as a whole, so it gets the 405 and Allow of any other OPTIONS rather than a
+         * 400. Any other method with "*" is malformed. The path is left as "/" for the caller. */
+        if (mlen != 7 || memcmp(line, "OPTIONS", 7) != 0) return PARSE_ERROR;
+        empty_path = 1;
+        target_len = 0;
     } else if (target[0] != '/') {
         return PARSE_ERROR; /* neither origin nor absolute form */
     }
