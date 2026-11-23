@@ -236,6 +236,28 @@ static void test_path_safety(void) {
     CHECK(http_path_is_safe(r.path) == 0);
 }
 
+static void test_hidden_paths(void) {
+    CHECK(http_path_is_hidden("/") == 0);
+    CHECK(http_path_is_hidden("/a/b.txt") == 0);
+    CHECK(http_path_is_hidden("/a/b.") == 0);
+    CHECK(http_path_is_hidden("/a/./b") == 0);
+    CHECK(http_path_is_hidden("/.git/config") == 1);
+    CHECK(http_path_is_hidden("/.env") == 1);
+    CHECK(http_path_is_hidden("/docs/.htpasswd") == 1);
+    CHECK(http_path_is_hidden("/docs/.hidden/x.txt") == 1);
+    CHECK(http_path_is_hidden("//.git//HEAD") == 1);
+    CHECK(http_path_is_hidden("/...") == 1);
+    CHECK(http_path_is_hidden("/.well-known/security.txt") == 0);
+    CHECK(http_path_is_hidden("//.well-known/acme-challenge/t") == 0);
+    CHECK(http_path_is_hidden("/.well-known/.secret") == 1);
+    CHECK(http_path_is_hidden("/docs/.well-known/x") == 1); /* only at the top, per RFC 8615 */
+    CHECK(http_path_is_hidden("/.well-knownx") == 1);
+
+    http_request r; /* an encoded dot decodes first, then is caught */
+    CHECK(parse("GET /%2egit/config HTTP/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_OK);
+    CHECK(http_path_is_hidden(r.path) == 1);
+}
+
 static void test_helpers(void) {
     CHECK(strncmp(http_mime_type("/x/index.HTML"), "text/html", 9) == 0);
     CHECK(strcmp(http_mime_type("/a.png"), "image/png") == 0);
@@ -344,6 +366,7 @@ int main(void) {
     test_pipelining();
     test_leading_empty_lines();
     test_path_safety();
+    test_hidden_paths();
     test_helpers();
     test_range();
     test_conditional_helpers();

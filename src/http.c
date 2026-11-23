@@ -130,6 +130,23 @@ int http_path_is_safe(const char *path) {
     return 1;
 }
 
+int http_path_is_hidden(const char *path) {
+    const char *p = path;
+    int first = 1;
+    while (*p) {
+        while (*p == '/') p++;
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        size_t n = (size_t)(p - seg);
+        /* "." names the directory itself, and ".." is refused by http_path_is_safe. */
+        int dotted = n > 0 && seg[0] == '.' && !(n == 1) && !(n == 2 && seg[1] == '.');
+        /* RFC 8615: /.well-known/ is meant to be served (ACME challenges, security.txt). */
+        if (dotted && !(first && n == 11 && memcmp(seg, ".well-known", 11) == 0)) return 1;
+        if (n > 0) first = 0;
+    }
+    return 0;
+}
+
 /*
  * Copies a header value. A value that does not fit is dropped, and so is a
  * header that appears twice: two Range headers make the request ambiguous, so

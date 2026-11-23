@@ -128,6 +128,14 @@ class ServerTest(unittest.TestCase):
         with open(os.path.join(base, "secret.txt"), "w") as f:
             f.write("TOP SECRET")
         os.symlink(os.path.join(base, "secret.txt"), os.path.join(root, "escape.txt"))
+        os.makedirs(os.path.join(root, ".git"))
+        with open(os.path.join(root, ".git", "config"), "w") as f:
+            f.write("[remote] url = SECRET")
+        with open(os.path.join(root, "docs", ".env"), "w") as f:
+            f.write("TOKEN=SECRET")
+        os.makedirs(os.path.join(root, ".well-known"))
+        with open(os.path.join(root, ".well-known", "security.txt"), "w") as f:
+            f.write("Contact: a@b")
 
         cls.root = root
         cls.port, cls.proc = start_server(root, cls.extra_args())
@@ -210,6 +218,21 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(status, 403, path)
             self.assertNotIn(b"SECRET", body)
             conn.close()
+
+    def test_dotfiles_are_hidden(self):
+        # A root that is a checkout or build folder must not hand out .git/ or .env, and 404
+        # does not even confirm they exist. /.well-known/ (RFC 8615) is still served.
+        for path in ["/.git/config", "/.git/", "/.git", "/docs/.env", "/%2egit/config", "/docs/%2Eenv"]:
+            conn = self.raw()
+            conn.send(get(self.port, path))
+            status, _, body = conn.response()
+            self.assertEqual(status, 404, path)
+            self.assertNotIn(b"SECRET", body)
+            conn.close()
+        c = self.client()
+        c.request("GET", "/.well-known/security.txt")
+        r = c.getresponse()
+        self.assertEqual((r.status, r.read()), (200, b"Contact: a@b"))
 
     def test_head_has_no_body(self):
         conn = self.raw()

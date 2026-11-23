@@ -62,6 +62,10 @@ int http_url_encode(const char *src, char *dst, size_t dstsz);
 /* 1 if path is absolute and has no ".." segment, else 0. */
 int http_path_is_safe(const char *path);
 
+/* 1 if a segment of path starts with a dot (".git", ".env", ".htpasswd"), else 0. Such files are
+ * kept out of reach, answered 404 as if absent; a leading /.well-known/ (RFC 8615) is not hidden. */
+int http_path_is_hidden(const char *path);
+
 /*
  * Range: a single byte range against a representation of `size` bytes (RFC 9110
  * section 14). Returns 1 with the inclusive [*first, *last] for a satisfiable

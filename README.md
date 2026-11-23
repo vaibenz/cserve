@@ -23,6 +23,7 @@ On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small pag
 
 **Hostile clients**
 * Kernel enforced path containment with `openat2(RESOLVE_BENEATH)`, so `..` and symlink escapes are refused
+* Dotfiles and dot directories (`.git/`, `.env`) answer `404`, so a root that is a checkout does not leak them; `/.well-known/` is still served
 * Slowloris: a request head has a deadline that further bytes do not extend, then `408`
 * Slow reads: a downloading client must take at least 1 KB/s, measured from what TCP has acknowledged
 * A connection cap that evicts the longest idle keep alive connection, and no busy loop when out of file descriptors
@@ -130,7 +131,7 @@ make test          # parser unit tests + end to end tests, both under ASan and U
 
 The end to end suite (`tests/test_integration.py`, standard library only) starts the real binary and checks:
 
-* **HTTP**: keep alive, pipelining (with a stray CRLF between requests, which RFC 9112 says to ignore), requests split across packets, SHA 256 integrity of an 8 MB transfer, 64 concurrent clients, the error statuses, and path traversal attempts including an encoded `%2e%2e` and a symlink out of the root
+* **HTTP**: keep alive, pipelining (with a stray CRLF between requests, which RFC 9112 says to ignore), requests split across packets, SHA 256 integrity of an 8 MB transfer, 64 concurrent clients, the error statuses, path traversal attempts including an encoded `%2e%2e` and a symlink out of the root, and hidden `.git/` and `.env` files
 * **Ranges and conditions**: every range form, unsatisfiable and ignored ranges, `If-None-Match` lists, `If-Modified-Since`, `If-Range`, an `ETag` that changes when only the nanosecond mtime does, and a download resumed over one keep alive connection
 * **TLS**: handshake and ALPN, keep alive, pipelining, integrity, a range, a slow reader, 32 concurrent clients, a plaintext client dropped, an h2 only client refused, a stalled handshake reaped
 * **Attacks**: Slowloris gets `408` at the deadline, 50 attackers at once do not stop service, eviction and refusal at the cap, a slow reader that is still taking data is kept, a trickle reader is reaped, a stalled reader is reaped, and 100 clients against 64 descriptors

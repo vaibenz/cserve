@@ -269,6 +269,12 @@ static void build_response(conn *c, const http_request *req) {
         build_error(c, 403, req->keep_alive, head, NULL);
         return;
     }
+    /* A document root is often a checkout or a build folder: .git/, .env and editor swap files
+     * must not be downloadable. 404 rather than 403, so their presence is not confirmed either. */
+    if (http_path_is_hidden(req->path)) {
+        build_error(c, 404, req->keep_alive, head, NULL);
+        return;
+    }
 
     const char *rel = req->path + 1; /* strip the leading slash */
     if (*rel == '\0') rel = ".";
