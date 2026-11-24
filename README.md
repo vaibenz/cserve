@@ -24,6 +24,7 @@ On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small pag
 **Hostile clients**
 * Kernel enforced path containment with `openat2(RESOLVE_BENEATH)`, so `..` and symlink escapes are refused
 * Dotfiles and dot directories (`.git/`, `.env`) answer `404`, so a root that is a checkout does not leak them; `/.well-known/` is still served
+* Anything in the root that is not a regular file or directory, such as a named pipe, answers `404`, and is opened non blocking so it can never stall a worker
 * Slowloris: a request head has a deadline that further bytes do not extend, then `408`
 * Slow reads: a downloading client must take at least 1 KB/s, measured from what TCP has acknowledged
 * A connection cap that evicts the longest idle keep alive connection, and no busy loop when out of file descriptors

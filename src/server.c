@@ -202,17 +202,22 @@ static int made_progress(conn *c) {
  * kernel itself refuses any resolution (including via symlinks) that escapes
  * the root, failing with EXDEV. Older kernels fall back to checking the
  * resolved path of the opened descriptor.
+ *
+ * O_NONBLOCK because the root may hold something that is not a file: opening a
+ * named pipe with no writer would block, and with it the whole worker thread
+ * and every connection it owns. Such a node is answered 404 after fstat. On a
+ * regular file or a directory the flag changes nothing.
  */
 static int open_beneath(int dirfd, const char *rel) {
 #ifdef HAVE_OPENAT2
     struct open_how how;
     memset(&how, 0, sizeof how);
-    how.flags = O_RDONLY | O_CLOEXEC;
+    how.flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY;
     how.resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS;
     int fd = (int)syscall(SYS_openat2, dirfd, rel, &how, sizeof how);
     if (fd >= 0 || errno != ENOSYS) return fd;
 #endif
-    int ffd = openat(dirfd, rel, O_RDONLY | O_CLOEXEC);
+    int ffd = openat(dirfd, rel, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
     if (ffd < 0) return -1;
     char link[64], real[PATH_MAX];
     snprintf(link, sizeof link, "/proc/self/fd/%d", ffd);

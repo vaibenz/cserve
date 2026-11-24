@@ -136,6 +136,7 @@ class ServerTest(unittest.TestCase):
         os.makedirs(os.path.join(root, ".well-known"))
         with open(os.path.join(root, ".well-known", "security.txt"), "w") as f:
             f.write("Contact: a@b")
+        os.mkfifo(os.path.join(root, "pipe"))
 
         cls.root = root
         cls.port, cls.proc = start_server(root, cls.extra_args())
@@ -233,6 +234,17 @@ class ServerTest(unittest.TestCase):
         c.request("GET", "/.well-known/security.txt")
         r = c.getresponse()
         self.assertEqual((r.status, r.read()), (200, b"Contact: a@b"))
+
+    def test_fifo_is_not_served_and_does_not_block_a_worker(self):
+        # A named pipe in the root has no writer, so a blocking open() of it would never return and
+        # the worker thread, with every connection it owns, would hang. It is not a file either: 404.
+        for _ in range(4):  # new connections, so both workers get a turn
+            conn = self.raw()
+            conn.send(get(self.port, "/pipe"))
+            self.assertEqual(conn.response()[0], 404)
+            conn.send(get(self.port))  # and the worker is still serving
+            self.assertEqual(conn.response()[::2], (200, b"hello world\n"))
+            conn.close()
 
     def test_head_has_no_body(self):
         conn = self.raw()
