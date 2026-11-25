@@ -253,7 +253,9 @@ static void build_error(conn *c, int status, int keep_alive, int head_only, cons
 
 static int status_for_errno(int err) {
     switch (err) {
-    case ENOENT: case ENOTDIR: return 404;
+    /* ENXIO: open() of a Unix domain socket (a dev server's or a database's, left in the root) always
+     * fails with it. Like a named pipe, that is a node with nothing to serve, so 404, not a 500. */
+    case ENOENT: case ENOTDIR: case ENXIO: return 404;
     case EACCES: case EPERM: case EXDEV: case ELOOP: return 403;
     case ENAMETOOLONG: return 414;
     default: return 500;

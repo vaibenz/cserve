@@ -137,6 +137,8 @@ class ServerTest(unittest.TestCase):
         with open(os.path.join(root, ".well-known", "security.txt"), "w") as f:
             f.write("Contact: a@b")
         os.mkfifo(os.path.join(root, "pipe"))
+        with socket.socket(socket.AF_UNIX) as s:
+            s.bind(os.path.join(root, "sock"))  # the socket file stays after the socket is closed
 
         cls.root = root
         cls.port, cls.proc = start_server(root, cls.extra_args())
@@ -245,6 +247,15 @@ class ServerTest(unittest.TestCase):
             conn.send(get(self.port))  # and the worker is still serving
             self.assertEqual(conn.response()[::2], (200, b"hello world\n"))
             conn.close()
+
+    def test_unix_socket_is_not_found(self):
+        # open() of a Unix domain socket fails (ENXIO) rather than giving a descriptor to fstat, and
+        # that must not read as a server fault: it is a node with nothing to serve, like the pipe.
+        conn = self.raw()
+        conn.send(get(self.port, "/sock"))
+        self.assertEqual(conn.response()[0], 404)
+        conn.send(get(self.port))  # and the connection is kept
+        self.assertEqual(conn.response()[::2], (200, b"hello world\n"))
 
     def test_head_has_no_body(self):
         conn = self.raw()
