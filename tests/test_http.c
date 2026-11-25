@@ -302,6 +302,9 @@ static void test_range(void) {
     CHECK(http_parse_range("bytes=1000-", 1000, &a, &b) == -1);
     CHECK(http_parse_range("bytes=-0", 1000, &a, &b) == -1);
     CHECK(http_parse_range("bytes=0-", 0, &a, &b) == -1);
+    /* A suffix of an empty file is satisfiable (RFC 9110 section 14.1.1) but empty: the whole file, not 416. */
+    CHECK(http_parse_range("bytes=-5", 0, &a, &b) == 0);
+    CHECK(http_parse_range("bytes=-0", 0, &a, &b) == -1);
     CHECK(http_parse_range("bytes=5-3", 1000, &a, &b) == 0);
     CHECK(http_parse_range("bytes=0-1,5-6", 1000, &a, &b) == 0);
     CHECK(http_parse_range("items=0-1", 1000, &a, &b) == 0);

@@ -70,8 +70,9 @@ int http_path_is_hidden(const char *path);
  * Range: a single byte range against a representation of `size` bytes (RFC 9110
  * section 14). Returns 1 with the inclusive [*first, *last] for a satisfiable
  * range, -1 when it is well formed but unsatisfiable (416), or 0 when the
- * header should be ignored and the whole file sent: malformed, or a multi
- * range request, which a server may always answer with a plain 200.
+ * header should be ignored and the whole file sent: malformed, a multi range
+ * request, which a server may always answer with a plain 200, or a suffix
+ * range of an empty file, which is satisfiable but has no bytes to send.
  */
 int http_parse_range(const char *v, long long size, long long *first, long long *last);
 

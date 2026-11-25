@@ -120,6 +120,7 @@ class ServerTest(unittest.TestCase):
             f.write("hello world\n")
         with open(os.path.join(root, "docs", "index.html"), "w") as f:
             f.write("<h1>docs</h1>")
+        open(os.path.join(root, "empty.txt"), "w").close()
         with open(os.path.join(root, "space name.txt"), "w") as f:
             f.write("spaced")
         cls.big = os.urandom(8 * 1024 * 1024)
@@ -438,6 +439,14 @@ class ServerTest(unittest.TestCase):
         r, _ = self.fetch("/hello.txt", Range="bytes=12-")
         self.assertEqual(r.status, 416)
         self.assertEqual(r.getheader("Content-Range"), "bytes */12")
+
+    def test_suffix_range_of_an_empty_file(self):
+        # "The last 5 bytes" of an empty file is satisfiable (RFC 9110 section 14.1.1) but there is no
+        # 206 for zero bytes, so the empty file comes back whole. A first-pos range is still a 416.
+        r, body = self.fetch("/empty.txt", Range="bytes=-5")
+        self.assertEqual((r.status, r.getheader("Content-Length"), body), (200, "0", b""))
+        r, _ = self.fetch("/empty.txt", Range="bytes=0-")
+        self.assertEqual((r.status, r.getheader("Content-Range")), (416, "bytes */0"))
 
     def test_ignored_ranges_send_the_whole_file(self):
         for spec in ("bytes=0-1,4-5", "bytes=5-2", "lines=1-2", "bytes=x"):

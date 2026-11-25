@@ -378,7 +378,10 @@ int http_parse_range(const char *v, long long size, long long *first, long long 
     if (*p != '\0') return 0; /* a second range ("0-1,5-6") or trailing junk: send the whole file */
 
     if (a < 0) { /* suffix range */
-        if (b == 0 || size == 0) return -1;
+        if (b == 0) return -1;
+        /* RFC 9110 section 14.1.1 counts a non zero suffix length as satisfiable even for an empty file,
+         * so 416 would be wrong, but no 206 can carry zero bytes: send the whole (empty) file instead. */
+        if (size == 0) return 0;
         *first = b >= size ? 0 : size - b;
         *last = size - 1;
         return 1;
