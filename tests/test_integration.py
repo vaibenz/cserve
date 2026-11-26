@@ -421,6 +421,20 @@ class ServerTest(unittest.TestCase):
         mtime = os.stat(os.path.join(self.root, "hello.txt")).st_mtime
         self.assertEqual(r.getheader("Last-Modified"), email.utils.formatdate(int(mtime), usegmt=True))
 
+    def test_last_modified_is_never_later_than_the_response(self):
+        # RFC 9110 section 8.8.2.1: an mtime ahead of the clock (a copy from a machine whose clock runs
+        # fast) is sent as the response's own date, and echoing that date back must not earn a 304.
+        path = os.path.join(self.root, "from_the_future.txt")
+        with open(path, "w") as f:
+            f.write("hello world\n")
+        ahead = time.time() + 365 * 86400
+        os.utime(path, (ahead, ahead))
+        r, _ = self.fetch("/from_the_future.txt")
+        lm = email.utils.parsedate_to_datetime(r.getheader("Last-Modified")).timestamp()
+        self.assertLessEqual(lm, email.utils.parsedate_to_datetime(r.getheader("Date")).timestamp())
+        r, body = self.fetch("/from_the_future.txt", **{"If-Modified-Since": r.getheader("Last-Modified")})
+        self.assertEqual((r.status, body), (200, b"hello world\n"))
+
     def test_range_forms(self):
         cases = {"bytes=0-4": (0, 4), "bytes=6-": (6, 11), "bytes=-3": (9, 11), "bytes=6-1000": (6, 11), "Bytes=0-4": (0, 4)}
         for spec, (a, b) in cases.items():

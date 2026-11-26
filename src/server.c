@@ -322,11 +322,16 @@ static void build_response(conn *c, const http_request *req) {
 
     const char *type = http_mime_type(is_index ? "index.html" : req->path);
 
-    /* Validators, sent with every file response. */
+    /* Validators, sent with every file response. A Last-Modified later than the server's clock
+     * MUST be replaced by the time of the response (RFC 9110 section 8.8.2.1): a file copied from a
+     * machine whose clock runs ahead, or extracted from an archive with future dates, would otherwise
+     * hand caches a date that has not happened yet. The real mtime still drives the conditions below,
+     * so a client echoing the clamped date never gets a 304 for a file that is newer than it. */
     char etag[96], lastmod[48], extra[384];
+    long long now = (long long)time(NULL), mtime = (long long)st.st_mtim.tv_sec;
     if (http_format_etag(etag, sizeof etag, (unsigned long long)st.st_ino, (long long)st.st_size,
-                         (long long)st.st_mtim.tv_sec, st.st_mtim.tv_nsec) < 0 ||
-        http_format_date(lastmod, sizeof lastmod, (long long)st.st_mtim.tv_sec) < 0) {
+                         mtime, st.st_mtim.tv_nsec) < 0 ||
+        http_format_date(lastmod, sizeof lastmod, mtime > now ? now : mtime) < 0) {
         close(fd);
         build_error(c, 500, 0, head, NULL);
         return;
@@ -343,7 +348,7 @@ static void build_response(conn *c, const http_request *req) {
          * Apache does: otherwise "If-Modified-Since: <next year>" would keep getting 304s for a file
          * that changes before then, and a cache holding that date would never see the new version. */
         long long since = http_parse_date(req->if_modified_since);
-        not_modified = since >= 0 && since <= (long long)time(NULL) && (long long)st.st_mtim.tv_sec <= since;
+        not_modified = since >= 0 && since <= now && mtime <= since;
     }
     if (not_modified) {
         close(fd);
@@ -374,7 +379,7 @@ static void build_response(conn *c, const http_request *req) {
         else if (req->if_range[0] == '"')
             use = strcmp(req->if_range, etag) == 0;
         else if (req->if_range[0])
-            use = strcmp(req->if_range, lastmod) == 0 && (long long)st.st_mtim.tv_sec < (long long)time(NULL);
+            use = strcmp(req->if_range, lastmod) == 0 && mtime < now;
         int r = use ? http_parse_range(req->range, (long long)st.st_size, &first, &last) : 0;
         if (r < 0) {
             close(fd);
