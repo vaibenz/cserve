@@ -9,7 +9,7 @@ On a 2 vCPU cloud VM it serves about 139,000 requests per second for a small pag
 ## What's in it
 
 **HTTP**
-* HTTP/1.1 keep alive and pipelining, `GET` and `HEAD` (any other method, `OPTIONS *` included, gets `405` with `Allow`), directory `index.html` (with a `301` from `/docs` to `/docs/` so relative links work, keeping any query string), MIME types, and `X-Content-Type-Options: nosniff` on every response so browsers never second guess the `Content-Type`
+* HTTP/1.1 keep alive and pipelining, `GET` and `HEAD` (any other method, `OPTIONS *` included, gets `405` with `Allow`), directory `index.html` (with a `301` from `/docs` to `/docs/` so relative links work, keeping any query string), a later `HTTP/1.x` (`HTTP/1.2`, say) served as 1.1 rather than refused with `505`, as RFC 9112 asks, MIME types, and `X-Content-Type-Options: nosniff` on every response so browsers never second guess the `Content-Type`
 * Range requests (`206`, `416`, `If-Range`) and conditional GET (`ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`, `304`)
 * A strict, allocation free request parser: bare `CR` or `LF`, a `NUL` or any other control character but tab in a header, a raw byte outside ASCII in the request target, a duplicate or malformed `Host` (or authority in an absolute form target), conflicting `Content-Length` and any `Transfer-Encoding` are refused, because request smuggling relies on two parsers disagreeing about where a request ends
 
@@ -103,7 +103,7 @@ make fuzz FUZZ_TIME=600     # needs clang
 
 1. The verdict depends only on the request head: parsing exactly the head, or the head followed by the start of a pipelined request, gives the same result and the same fields.
 2. A head is never judged before it is complete: every shorter prefix is `INCOMPLETE`.
-3. An accepted request is well formed: absolute, NUL terminated path, HTTP/1.0 or 1.1, a head that ends in CRLFCRLF.
+3. An accepted request is well formed: absolute, NUL terminated path, HTTP/1.0 or 1.1 (a later 1.x is read as 1.1), a head that ends in CRLFCRLF.
 4. `http_path_is_safe` agrees with a separate, deliberately naive implementation of the same rule.
 5. Percent decoding round trips.
 6. A satisfiable `Range` always lies inside the file, and writing it back out parses to the same range.

@@ -109,6 +109,12 @@ static void test_absolute_form(void) {
 static void test_versions_and_headers(void) {
     http_request r;
     CHECK(parse("GET / HTTP/2.0\r\nHost: a\r\n\r\n", &r) == PARSE_BAD_VERSION);
+    /* A later HTTP/1 minor version is served as HTTP/1.1, with 1.1's rules (Host required, keep alive). */
+    CHECK(parse("GET / HTTP/1.2\r\nHost: a\r\n\r\n", &r) == PARSE_OK && r.version_minor == 1 && r.keep_alive);
+    CHECK(parse("GET / HTTP/1.9\r\nHost: a\r\nConnection: close\r\n\r\n", &r) == PARSE_OK && !r.keep_alive);
+    CHECK(parse("GET / HTTP/1.2\r\n\r\n", &r) == PARSE_ERROR); /* no Host */
+    CHECK(parse("GET / HTTP/0.9\r\nHost: a\r\n\r\n", &r) == PARSE_BAD_VERSION);
+    CHECK(parse("GET / HTTP/1.x\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET / FOO/1.1\r\nHost: a\r\n\r\n", &r) == PARSE_ERROR);
     CHECK(parse("GET / HTTP/1.1\r\n\r\n", &r) == PARSE_ERROR);                       /* no Host */
     CHECK(parse("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", &r) == PARSE_ERROR); /* two Hosts */

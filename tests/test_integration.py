@@ -308,6 +308,12 @@ class ServerTest(unittest.TestCase):
         conn.send(b"GET / HTTP/2.0\r\nHost: x\r\n\r\n")
         self.assertEqual(conn.response()[0], 505)
 
+    def test_later_http1_minor_version_is_served_as_1_1(self):
+        conn = self.raw()
+        conn.send(b"GET /hello.txt HTTP/1.2\r\nHost: x\r\n\r\n")
+        status, headers, body = conn.response()
+        self.assertEqual((status, headers["connection"], body), (200, "keep-alive", b"hello world\n"))
+
     def test_method_not_allowed(self):
         conn = self.raw()
         conn.send(b"DELETE /hello.txt HTTP/1.1\r\nHost: x\r\n\r\n")

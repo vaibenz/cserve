@@ -248,6 +248,10 @@ static parse_result parse_head(const char *buf, size_t len, http_request *req) {
     size_t ver_len = (size_t)(line_end - ver);
     if (ver_len == 8 && memcmp(ver, "HTTP/1.1", 8) == 0) req->version_minor = 1;
     else if (ver_len == 8 && memcmp(ver, "HTTP/1.0", 8) == 0) req->version_minor = 0;
+    /* RFC 9112 section 2.3: a higher minor version of a major version we implement ("HTTP/1.2") is
+     * processed as the highest one we know, HTTP/1.1, rather than refused with a 505. */
+    else if (ver_len == 8 && memcmp(ver, "HTTP/1.", 7) == 0 && ver[7] >= '2' && ver[7] <= '9')
+        req->version_minor = 1;
     else if (ver_len == 8 && memcmp(ver, "HTTP/", 5) == 0 && ver[5] >= '0' && ver[5] <= '9' &&
              ver[6] == '.' && ver[7] >= '0' && ver[7] <= '9')
         return PARSE_BAD_VERSION;
