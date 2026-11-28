@@ -318,7 +318,13 @@ static void test_range(void) {
     CHECK(http_parse_range("BYTES=-1", 1000, &a, &b) == 1 && a == 999 && b == 999);
     CHECK(http_parse_range("bytes=", 1000, &a, &b) == 0);
     CHECK(http_parse_range("bytes=-", 1000, &a, &b) == 0);
-    CHECK(http_parse_range("bytes=1234567890123456789-", 1000, &a, &b) == 0); /* 19 digits */
+    /* Positions past 18 digits saturate: a huge first-pos is past the end, a huge last-pos or
+     * suffix length means the rest of the file, as for any other value beyond the end. */
+    CHECK(http_parse_range("bytes=1234567890123456789-", 1000, &a, &b) == -1);
+    CHECK(http_parse_range("bytes=0-99999999999999999999999999", 1000, &a, &b) == 1 && a == 0 && b == 999);
+    CHECK(http_parse_range("bytes=10-9223372036854775807", 1000, &a, &b) == 1 && a == 10 && b == 999);
+    CHECK(http_parse_range("bytes=-99999999999999999999999999", 1000, &a, &b) == 1 && a == 0 && b == 999);
+    CHECK(http_parse_range("bytes=0000000000000000000005-9", 1000, &a, &b) == 1 && a == 5 && b == 9);
     CHECK(http_parse_range("bytes=0-1x", 1000, &a, &b) == 0);
 }
 

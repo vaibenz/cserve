@@ -351,13 +351,16 @@ parse_result http_parse_request(const char *buf, size_t len, http_request *req) 
     return req->header_len > MAX_HEADERS_SIZE ? PARSE_TOO_LARGE : PARSE_OK;
 }
 
-/* Parses a decimal of at most 18 digits (no overflow). Returns digits read, or 0. */
+/* Parses a decimal. Returns digits read, or 0. A value past 18 digits saturates at RANGE_POS_MAX
+ * instead of overflowing: RFC 9110 section 14.1.1 lets a client send a last-pos (or suffix length)
+ * bigger than any file to mean "to the end", and a first-pos that big is simply past the end. */
+#define RANGE_POS_MAX 999999999999999999LL
 static int parse_digits(const char **p, long long *out) {
     long long v = 0;
     int n = 0;
     while (**p >= '0' && **p <= '9') {
-        if (++n > 18) return 0;
-        v = v * 10 + (**p - '0');
+        v = v > RANGE_POS_MAX / 10 ? RANGE_POS_MAX : v * 10 + (**p - '0');
+        n++;
         (*p)++;
     }
     *out = v;
